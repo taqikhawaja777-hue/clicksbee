@@ -1,0 +1,23 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+release/
+.vite/
+coverage/
+admin_dashboard/build_dist/
+
+# Runtime data
+backend/storage/
+
+# Logs and editor files
+*.log
+.vscode/
+*.tsbuildinfo

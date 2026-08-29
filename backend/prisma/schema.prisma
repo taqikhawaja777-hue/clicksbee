@@ -1,0 +1,677 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum ProjectStatus {
+  PLANNED
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  HALF_DAY
+  ON_LEAVE
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  INTERRUPTED
+}
+
+enum BreakType {
+  LUNCH
+  SHORT_BREAK
+  PERSONAL
+  OTHER
+}
+
+enum ActivityEventType {
+  LOGIN
+  LOGOUT
+  CLOCK_IN
+  CLOCK_OUT
+  APPLICATION_STARTED
+  APPLICATION_STOPPED
+  WEBSITE_VISITED
+  IDLE_STARTED
+  IDLE_ENDED
+  BREAK_STARTED
+  BREAK_ENDED
+  SCREENSHOT_CAPTURED
+  TASK_STARTED
+  TASK_COMPLETED
+  DEVICE_ONLINE
+  DEVICE_OFFLINE
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_COMPLETED
+  PROJECT_UPDATED
+  POLICY_UPDATED
+  SYSTEM_ALERT
+  ATTENDANCE_ALERT
+}
+
+enum LicensePlan {
+  FREE
+  STARTER
+  BUSINESS
+  ENTERPRISE
+}
+
+enum LicenseStatus {
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+}
+
+enum RuleType {
+  APPLICATION
+  WEBSITE
+}
+
+model Organization {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  name             String
+  slug             String   @unique
+  timezone         String   @default("UTC")
+  workingHoursStart String  @default("09:00")
+  workingHoursEnd   String  @default("17:00")
+  weekendDays      String[] @default(["SATURDAY", "SUNDAY"])
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  users            User[]
+  departments      Department[]
+  teams            Team[]
+  projects         Project[]
+  tasks            Task[]
+  attendance       Attendance[]
+  workSessions     WorkSession[]
+  breakSessions    BreakSession[]
+  activityEvents   ActivityEvent[]
+  applicationUsage ApplicationUsage[]
+  websiteUsage     WebsiteUsage[]
+  screenshots      Screenshot[]
+  productivityRecords ProductivityRecord[]
+  policies         MonitoringPolicy[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  devices          Device[]
+  licenses         License[]
+  categoryRules    CategoryRule[]
+  syncQueues       SyncQueue[]
+  recordings       Recording[]
+  videoRecordings  VideoRecording[]
+
+  @@index([createdAt])
+}
+
+model User {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String    @db.ObjectId
+  firstName      String
+  lastName       String
+  email          String    @unique
+  passwordHash   String
+  role           Role      @default(EMPLOYEE)
+  employeeCode   String?
+  avatar         String?
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  departmentId   String?   @db.ObjectId
+  teamId         String?   @db.ObjectId
+  managerId      String?   @db.ObjectId
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  department     Department?  @relation(fields: [departmentId], references: [id])
+  team           Team?        @relation(fields: [teamId], references: [id])
+  manager        User?        @relation("ManagerSubordinates", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  subordinates   User[]       @relation("ManagerSubordinates")
+
+  attendance          Attendance[]
+  workSessions        WorkSession[]
+  breakSessions       BreakSession[]
+  activityEvents      ActivityEvent[]
+  applicationUsage    ApplicationUsage[]
+  websiteUsage        WebsiteUsage[]
+  screenshots         Screenshot[]
+  productivityRecords ProductivityRecord[]
+  assignedTasks       Task[]         @relation("AssignedTasks")
+  createdTasks        Task[]         @relation("CreatedTasks")
+  managedProjects     Project[]      @relation("ManagedProjects")
+  createdProjects     Project[]      @relation("CreatedProjects")
+  devices             Device[]
+  refreshTokens       RefreshToken[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  userPolicies        UserPolicy[]
+  consentRecords      ConsentRecord[]
+  recordings          Recording[]
+  videoRecordings     VideoRecording[]
+
+  @@index([organizationId, role])
+  @@index([organizationId, departmentId])
+  @@index([organizationId, teamId])
+}
+
+model Department {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  name           String
+  description    String?
+  managerId      String?  @db.ObjectId
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users        User[]
+  teams        Team[]
+
+  @@index([organizationId])
+}
+
+model Team {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  departmentId   String?  @db.ObjectId
+  name           String
+  description    String?
+  leaderId       String?  @db.ObjectId
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  department   Department?  @relation(fields: [departmentId], references: [id])
+  users        User[]
+
+  @@index([organizationId, departmentId])
+}
+
+model Device {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String    @db.ObjectId
+  organizationId String    @db.ObjectId
+  deviceName     String
+  hostname       String
+  platform       String
+  osVersion      String
+  appVersion     String
+  ipAddress      String?
+  lastSeenAt     DateTime  @default(now())
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  attendance       Attendance[]
+  workSessions     WorkSession[]
+  activityEvents   ActivityEvent[]
+  applicationUsage ApplicationUsage[]
+  websiteUsage     WebsiteUsage[]
+  screenshots      Screenshot[]
+
+  @@index([organizationId, userId])
+}
+
+model Attendance {
+  id                 String           @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId     String           @db.ObjectId
+  userId             String           @db.ObjectId
+  deviceId           String?          @db.ObjectId
+  date               String
+  clockIn            DateTime
+  clockOut           DateTime?
+  totalWorkDuration  Int              @default(0)
+  productiveDuration Int              @default(0)
+  idleDuration       Int              @default(0)
+  breakDuration      Int              @default(0)
+  overtimeDuration   Int              @default(0)
+  status             AttendanceStatus @default(PRESENT)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device       Device?      @relation(fields: [deviceId], references: [id])
+
+  @@unique([userId, date])
+  @@index([organizationId, date])
+  @@index([organizationId, userId, date])
+}
+
+model WorkSession {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String        @db.ObjectId
+  userId         String        @db.ObjectId
+  deviceId       String?       @db.ObjectId
+  startedAt      DateTime      @default(now())
+  endedAt        DateTime?
+  duration       Int           @default(0)
+  status         SessionStatus @default(ACTIVE)
+  lastHeartbeatAt DateTime     @default(now())
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device       Device?        @relation(fields: [deviceId], references: [id])
+  breakSessions BreakSession[]
+
+  @@index([organizationId, userId, status])
+}
+
+model BreakSession {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String    @db.ObjectId
+  userId         String    @db.ObjectId
+  workSessionId  String?   @db.ObjectId
+  breakType      BreakType @default(SHORT_BREAK)
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+  duration       Int       @default(0)
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workSession  WorkSession? @relation(fields: [workSessionId], references: [id])
+
+  @@index([organizationId, userId])
+}
+
+model ActivityEvent {
+  id             String            @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String            @db.ObjectId
+  userId         String            @db.ObjectId
+  deviceId       String?           @db.ObjectId
+  type           ActivityEventType
+  timestamp      DateTime          @default(now())
+  metadata       Json?
+  eventId        String?           @unique
+  createdAt      DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device       Device?      @relation(fields: [deviceId], references: [id])
+
+  @@index([organizationId, userId, timestamp])
+  @@index([organizationId, type, timestamp])
+}
+
+model ApplicationUsage {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId  String   @db.ObjectId
+  userId          String   @db.ObjectId
+  deviceId        String?  @db.ObjectId
+  applicationName String
+  processName     String
+  windowTitle     String?
+  startedAt       DateTime
+  endedAt         DateTime
+  duration        Int      @default(0)
+  category        String   @default("Uncategorized")
+  isProductive    Boolean  @default(true)
+  eventId         String?  @unique
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device       Device?      @relation(fields: [deviceId], references: [id])
+
+  @@index([organizationId, userId, startedAt])
+  @@index([organizationId, applicationName])
+}
+
+model WebsiteUsage {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  userId         String   @db.ObjectId
+  deviceId       String?  @db.ObjectId
+  domain         String
+  url            String
+  title          String?
+  startedAt      DateTime
+  endedAt        DateTime
+  duration       Int      @default(0)
+  category       String   @default("Uncategorized")
+  isProductive   Boolean  @default(true)
+  eventId        String?  @unique
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device       Device?      @relation(fields: [deviceId], references: [id])
+
+  @@index([organizationId, userId, startedAt])
+  @@index([organizationId, domain])
+}
+
+model Screenshot {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId     String   @db.ObjectId
+  userId             String   @db.ObjectId
+  deviceId           String?  @db.ObjectId
+  taskId             String?  @db.ObjectId
+  fileName           String
+  filePath           String
+  fileUrl            String
+  isTaskRelevant     Boolean?
+  progressPercentage Int?
+  aiSummary          String?
+  status             String?
+  capturedAt         DateTime @default(now())
+  fileSize           Int
+  mimeType           String   @default("image/png")
+  hash               String?
+  isBlurred          Boolean  @default(false)
+  eventId            String?  @unique
+  createdAt          DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device       Device?      @relation(fields: [deviceId], references: [id])
+  task         Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, userId, capturedAt])
+}
+
+model ProductivityRecord {
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId         String   @db.ObjectId
+  userId                 String   @db.ObjectId
+  date                   String
+  totalTrackedSeconds    Int      @default(0)
+  productiveSeconds      Int      @default(0)
+  idleSeconds            Int      @default(0)
+  breakSeconds           Int      @default(0)
+  activeSeconds          Int      @default(0)
+  productivityPercentage Float    @default(0)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([organizationId, date])
+}
+
+model MonitoringPolicy {
+  id                         String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId             String   @db.ObjectId
+  name                       String
+  policyVersion              String   @default("1.0.0")
+  isDefault                  Boolean  @default(false)
+  minScreenshotInterval      Int      @default(300)
+  maxScreenshotInterval      Int      @default(900)
+  screenshotEnabled          Boolean  @default(true)
+  idleTimeoutSeconds         Int      @default(300)
+  applicationTrackingEnabled Boolean  @default(true)
+  websiteTrackingEnabled     Boolean  @default(true)
+  captureOnActivity          Boolean  @default(false)
+  retentionDays              Int      @default(60)
+  workingHoursStart          String   @default("09:00")
+  workingHoursEnd            String   @default("17:00")
+  excludedApps               String[] @default(["1Password", "KeePass", "Bitwarden", "Bank"])
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userPolicies UserPolicy[]
+
+  @@index([organizationId])
+}
+
+model ConsentRecord {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String   @db.ObjectId
+  policyVersion String
+  consentedAt   DateTime @default(now())
+  ipAddress     String?
+  userAgent     String?
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, policyVersion])
+}
+
+model Recording {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  userId         String   @db.ObjectId
+  sessionId      String?  @db.ObjectId
+  filePath       String
+  fileUrl        String
+  durationMs     Int
+  startedAt      DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, startedAt])
+}
+
+model VideoRecording {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String   @db.ObjectId
+  organizationId String   @db.ObjectId
+  title          String
+  filePath       String
+  fileUrl        String
+  durationSec    Int      @default(0)
+  fileSizeMb     Float    @default(0)
+  mimeType       String   @default("video/webm")
+  status         String   @default("COMPLETED")
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, createdAt])
+}
+
+model UserPolicy {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  userId         String   @db.ObjectId
+  policyId       String   @db.ObjectId
+  createdAt      DateTime @default(now())
+
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  policy MonitoringPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, policyId])
+}
+
+model CategoryRule {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  type           RuleType
+  pattern        String
+  category       String
+  isProductive   Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, type])
+}
+
+model Project {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String        @db.ObjectId
+  name           String
+  description    String?
+  status         ProjectStatus @default(ACTIVE)
+  startDate      DateTime?
+  endDate        DateTime?
+  progress       Float         @default(0)
+  managerId      String?       @db.ObjectId
+  createdBy      String?       @db.ObjectId
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  manager      User?        @relation("ManagedProjects", fields: [managerId], references: [id])
+  creator      User?        @relation("CreatedProjects", fields: [createdBy], references: [id])
+  tasks        Task[]
+
+  @@index([organizationId, status])
+}
+
+model Task {
+  id                   String       @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId       String       @db.ObjectId
+  projectId            String?      @db.ObjectId
+  assignedTo           String?      @db.ObjectId
+  assignedBy           String?      @db.ObjectId
+  title                String
+  description          String?
+  status               TaskStatus   @default(TODO)
+  priority             TaskPriority @default(MEDIUM)
+  estimatedMinutes     Int          @default(0)
+  estimatedTimeMinutes Int          @default(0)
+  actualMinutes        Int          @default(0)
+  actualTimeMinutes    Int?         @default(0)
+  dueDate              DateTime?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id])
+  assignee     User?        @relation("AssignedTasks", fields: [assignedTo], references: [id])
+  assigner     User?        @relation("CreatedTasks", fields: [assignedBy], references: [id])
+  screenshots  Screenshot[]
+
+  @@index([organizationId, assignedTo, status])
+  @@index([organizationId, projectId])
+}
+
+model AuditLog {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  userId         String?  @db.ObjectId
+  action         String
+  entityType     String
+  entityId       String?
+  metadata       Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id])
+
+  @@index([organizationId, createdAt])
+}
+
+model Notification {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String           @db.ObjectId
+  userId         String           @db.ObjectId
+  type           NotificationType
+  title          String
+  message        String
+  isRead         Boolean          @default(false)
+  readAt         DateTime?
+  metadata       Json?
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, isRead])
+}
+
+model SyncQueue {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId  String   @db.ObjectId
+  userId          String   @db.ObjectId
+  deviceId        String?  @db.ObjectId
+  syncId          String   @unique
+  eventsCount     Int      @default(0)
+  processedCount  Int      @default(0)
+  failedCount     Int      @default(0)
+  duplicatesCount Int      @default(0)
+  clientTimestamp String?
+  status          String   @default("COMPLETED")
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId])
+}
+
+model RefreshToken {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String   @db.ObjectId
+  tokenHash       String
+  expiresAt       DateTime
+  isRevoked       Boolean  @default(false)
+  replacedByToken String?
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model License {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String        @db.ObjectId
+  plan           LicensePlan   @default(STARTER)
+  maxEmployees   Int           @default(50)
+  status         LicenseStatus @default(ACTIVE)
+  startDate      DateTime      @default(now())
+  expiryDate     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}

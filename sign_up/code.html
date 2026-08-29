@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>StitchMonitor - Sign Up</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #f0f4ff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      position: relative;
+      overflow-x: hidden;
+    }
+    .blur-1 {
+      position: absolute; top: -20%; left: -10%;
+      width: 50vw; height: 50vw; border-radius: 50%;
+      background: rgba(180, 197, 255, 0.25); filter: blur(120px);
+      pointer-events: none;
+    }
+    .blur-2 {
+      position: absolute; bottom: -20%; right: -10%;
+      width: 40vw; height: 40vw; border-radius: 50%;
+      background: rgba(211, 228, 254, 0.4); filter: blur(100px);
+      pointer-events: none;
+    }
+    .card {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 600px;
+      background: #fff; border-radius: 20px;
+      border: 1px solid rgba(195, 198, 215, 0.3);
+      box-shadow: 0 10px 40px -10px rgba(0,0,0,0.08);
+      padding: 40px;
+    }
+    .card-header { text-align: center; margin-bottom: 32px; }
+    .logo-box {
+      width: 48px; height: 48px; border-radius: 12px;
+      background: linear-gradient(135deg, #004ac6, #2563eb);
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 12px; box-shadow: 0 4px 12px rgba(0,74,198,0.25);
+    }
+    .logo-box .material-symbols-outlined { color: #fff; font-size: 28px; }
+    h1 { font-size: 24px; font-weight: 700; color: #0b1c30; margin-bottom: 4px; }
+    .card-header p { font-size: 14px; color: #737686; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-group label { font-size: 12px; font-weight: 600; color: #0b1c30; letter-spacing: 0.04em; }
+    .form-group input,
+    .form-group select {
+      width: 100%; border: 1px solid #c3c6d7;
+      background: #f8f9ff; color: #0b1c30;
+      font-family: 'Inter', sans-serif; font-size: 14px;
+      border-radius: 10px; padding: 12px 16px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      outline: none;
+    }
+    .form-group input:focus,
+    .form-group select:focus {
+      border-color: #004ac6;
+      box-shadow: 0 0 0 3px rgba(0,74,198,0.12);
+    }
+    .form-group .hint { font-size: 11px; color: #737686; margin-top: 2px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 560px) { .grid-2 { grid-template-columns: 1fr; } }
+    /* Role cards */
+    .role-cards { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+    @media (max-width: 560px) { .role-cards { grid-template-columns: 1fr; } }
+    .role-card {
+      border: 1.5px solid #c3c6d7; border-radius: 12px;
+      padding: 14px; cursor: pointer;
+      transition: all 0.2s ease-in-out;
+      background: #fff; text-align: left;
+    }
+    .role-card:hover { border-color: rgba(0,74,198,0.4); background: #f0f4ff; }
+    .role-card.selected { border-color: #004ac6; background: #eff2ff; box-shadow: 0 0 0 1px #004ac6; }
+    .role-card .rc-icon { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .role-card .rc-icon .material-symbols-outlined { font-size: 20px; }
+    .role-card .rc-name { font-size: 13px; font-weight: 600; color: #0b1c30; }
+    .role-card .rc-desc { font-size: 11px; color: #737686; line-height: 1.5; }
+    /* Checkbox */
+    .terms-row { display: flex; align-items: flex-start; gap: 10px; }
+    .terms-row input[type=checkbox] { width: 16px; height: 16px; margin-top: 2px; accent-color: #004ac6; cursor: pointer; flex-shrink: 0; }
+    .terms-row label { font-size: 13px; color: #737686; cursor: pointer; }
+    .terms-row label a { color: #004ac6; font-weight: 500; text-decoration: none; }
+    .terms-row label a:hover { text-decoration: underline; }
+    .btn-primary {
+      width: 100%; padding: 14px;
+      background: linear-gradient(135deg, #004ac6, #2563eb);
+      color: #fff; border: none; border-radius: 10px;
+      font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 600;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+      transition: all 0.2s; box-shadow: 0 4px 14px rgba(0,74,198,0.3);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,74,198,0.4); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .login-link { text-align: center; font-size: 14px; color: #737686; }
+    .login-link a { color: #004ac6; font-weight: 600; text-decoration: none; }
+    .login-link a:hover { color: #003ea8; }
+    /* Toast */
+    .toast {
+      position: fixed; top: 24px; right: 24px; z-index: 100;
+      padding: 14px 20px; border-radius: 12px;
+      font-size: 14px; font-weight: 500; max-width: 400px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+      transform: translateX(120%); transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    .toast.show { transform: translateX(0); }
+    .toast.success { background: #065f46; color: #d1fae5; }
+    .toast.error { background: #991b1b; color: #fecaca; }
+    .spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .back-link {
+      position: fixed; top: 24px; left: 24px; z-index: 10;
+      display: flex; align-items: center; gap: 6px;
+      font-size: 13px; font-weight: 600; color: #004ac6;
+      text-decoration: none; padding: 8px 14px;
+      background: rgba(255,255,255,0.8); border-radius: 9999px;
+      border: 1px solid rgba(195,198,215,0.3);
+      backdrop-filter: blur(8px); transition: all 0.2s;
+    }
+    .back-link:hover { background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  </style>
+</head>
+<body>
+  <div class="blur-1"></div>
+  <div class="blur-2"></div>
+
+  <a href="/" class="back-link">
+    <span class="material-symbols-outlined" style="font-size:18px;">arrow_back</span>
+    Back to Home
+  </a>
+
+  <div id="toast" class="toast"></div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="logo-box">
+        <span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1;">monitoring</span>
+      </div>
+      <h1>Create your account</h1>
+      <p>Join StitchMonitor to ensure operational excellence.</p>
+    </div>
+
+    <form id="signupForm" onsubmit="handleSignup(event)" style="display:flex;flex-direction:column;gap:20px;">
+      <!-- Role Selection -->
+      <div>
+        <label style="font-size:12px;font-weight:600;color:#0b1c30;letter-spacing:0.04em;display:block;margin-bottom:10px;">Select your role</label>
+        <div class="role-cards">
+          <div class="role-card selected" onclick="selectRole(this, 'ADMIN')" tabindex="0">
+            <div class="rc-icon">
+              <span class="material-symbols-outlined" style="color:#004ac6;">admin_panel_settings</span>
+              <span class="rc-name">Admin</span>
+            </div>
+            <p class="rc-desc">Full system access, policy management, organizational control.</p>
+          </div>
+          <div class="role-card" onclick="selectRole(this, 'MANAGER')" tabindex="0">
+            <div class="rc-icon">
+              <span class="material-symbols-outlined" style="color:#006058;">manage_accounts</span>
+              <span class="rc-name">Manager</span>
+            </div>
+            <p class="rc-desc">View reports, monitor team activity, manage approvals.</p>
+          </div>
+          <div class="role-card" onclick="selectRole(this, 'EMPLOYEE')" tabindex="0">
+            <div class="rc-icon">
+              <span class="material-symbols-outlined" style="color:#4648d4;">person</span>
+              <span class="rc-name">Employee</span>
+            </div>
+            <p class="rc-desc">Access personal logs, view policies, manage own status.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Name & Company -->
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="firstName">First Name</label>
+          <input id="firstName" type="text" placeholder="John" required/>
+        </div>
+        <div class="form-group">
+          <label for="lastName">Last Name</label>
+          <input id="lastName" type="text" placeholder="Doe" required/>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="companyName">Organization / Company Name</label>
+        <input id="companyName" type="text" placeholder="Acme Corp" required/>
+      </div>
+
+      <div class="form-group">
+        <label for="email">Work Email</label>
+        <input id="email" type="email" placeholder="john@acmecorp.com" required autocomplete="email"/>
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="••••••••" required autocomplete="new-password"/>
+        <span class="hint">Must be at least 6 characters long.</span>
+      </div>
+
+      <!-- Terms -->
+      <div class="terms-row">
+        <input id="terms" type="checkbox" required/>
+        <label for="terms">
+          I agree to the <a href="javascript:void(0)">Terms of Service</a> and <a href="javascript:void(0)">Privacy Policy</a>.
+        </label>
+      </div>
+
+      <!-- Actions -->
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <button type="submit" class="btn-primary" id="submitBtn">
+          <span id="btnText">Create Account</span>
+        </button>
+        <p class="login-link">
+          Already have an account? <a href="/login/code.html">Sign in instead</a>
+        </p>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:3000/api/v1';
+    let selectedRole = 'ADMIN';
+
+    function selectRole(el, role) {
+      document.querySelectorAll('.role-card').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+      selectedRole = role;
+    }
+
+    function showToast(msg, type) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast ' + type + ' show';
+      setTimeout(() => { t.classList.remove('show'); }, 4000);
+    }
+
+    function setLoading(loading) {
+      const btn = document.getElementById('submitBtn');
+      const text = document.getElementById('btnText');
+      if (loading) {
+        btn.disabled = true;
+        text.textContent = 'Creating account...';
+        if (!document.getElementById('loadSpinner')) {
+          const sp = document.createElement('span');
+          sp.className = 'spinner';
+          sp.id = 'loadSpinner';
+          btn.appendChild(sp);
+        }
+      } else {
+        btn.disabled = false;
+        text.textContent = 'Create Account';
+        const sp = document.getElementById('loadSpinner');
+        if (sp) sp.remove();
+      }
+    }
+
+    async function handleSignup(e) {
+      e.preventDefault();
+
+      const firstName = document.getElementById('firstName').value.trim();
+      const lastName = document.getElementById('lastName').value.trim();
+      const organizationName = document.getElementById('companyName').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const terms = document.getElementById('terms').checked;
+
+      if (!firstName || !lastName || !organizationName || !email || !password) {
+        showToast('Please fill in all required fields', 'error');
+        return;
+      }
+      if (password.length < 6) {
+        showToast('Password must be at least 6 characters', 'error');
+        return;
+      }
+      if (!terms) {
+        showToast('Please accept the Terms of Service', 'error');
+        return;
+      }
+
+      setLoading(true);
+
+      try {
+        const res = await fetch(API_BASE + '/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            organizationName,
+            firstName,
+            lastName,
+            email,
+            password,
+            role: selectedRole
+          })
+        });
+
+        const data = await res.json();
+
+        if (res.ok || res.status === 201) {
+          // Store tokens if returned
+          if (data.data) {
+            localStorage.setItem('access_token', data.data.accessToken || data.data.access_token || '');
+            localStorage.setItem('refresh_token', data.data.refreshToken || data.data.refresh_token || '');
+            localStorage.setItem('user', JSON.stringify(data.data.user || {}));
+          }
+
+          showToast('Account created successfully! Redirecting to login...', 'success');
+          setTimeout(() => {
+            window.location.href = '/login/code.html';
+          }, 1500);
+        } else {
+          const msg = Array.isArray(data.message) ? data.message.join(', ') : (data.message || 'Registration failed');
+          showToast(msg, 'error');
+        }
+      } catch (err) {
+        showToast('Cannot connect to server. Is the backend running on port 3000?', 'error');
+        console.error('Signup error:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+  </script>
+</body>
+</html>
