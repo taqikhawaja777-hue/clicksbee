@@ -134,8 +134,6 @@ model Organization {
   licenses         License[]
   categoryRules    CategoryRule[]
   syncQueues       SyncQueue[]
-  recordings       Recording[]
-  videoRecordings  VideoRecording[]
 
   @@index([createdAt])
 }
@@ -183,8 +181,6 @@ model User {
   auditLogs           AuditLog[]
   userPolicies        UserPolicy[]
   consentRecords      ConsentRecord[]
-  recordings          Recording[]
-  videoRecordings     VideoRecording[]
 
   @@index([organizationId, role])
   @@index([organizationId, departmentId])
@@ -395,6 +391,7 @@ model Screenshot {
   fileName           String
   filePath           String
   fileUrl            String
+  activeWindowName   String?
   isTaskRelevant     Boolean?
   progressPercentage Int?
   aiSummary          String?
@@ -473,42 +470,6 @@ model ConsentRecord {
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, policyVersion])
-}
-
-model Recording {
-  id             String   @id @default(auto()) @map("_id") @db.ObjectId
-  organizationId String   @db.ObjectId
-  userId         String   @db.ObjectId
-  sessionId      String?  @db.ObjectId
-  filePath       String
-  fileUrl        String
-  durationMs     Int
-  startedAt      DateTime @default(now())
-  createdAt      DateTime @default(now())
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([organizationId, userId, startedAt])
-}
-
-model VideoRecording {
-  id             String   @id @default(auto()) @map("_id") @db.ObjectId
-  userId         String   @db.ObjectId
-  organizationId String   @db.ObjectId
-  title          String
-  filePath       String
-  fileUrl        String
-  durationSec    Int      @default(0)
-  fileSizeMb     Float    @default(0)
-  mimeType       String   @default("video/webm")
-  status         String   @default("COMPLETED")
-  createdAt      DateTime @default(now())
-
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([organizationId, userId, createdAt])
 }
 
 model UserPolicy {

@@ -2,20 +2,26 @@
   "name": "worktrackpro-agent",
   "version": "1.0.0",
   "description": "WorkTrackPro Employee Monitoring Desktop Agent",
+  "author": "StitchMonitor",
   "main": "dist-electron/main.js",
   "scripts": {
-    "clean": "node -e \"const fs=require('fs'); ['dist','dist-electron','release','.vite'].forEach(d => fs.rmSync(d, {recursive: true, force: true}))\"",
+    "clean": "node -e \"const fs=require('fs'); ['dist','dist-electron','release','dist-installer','.vite'].forEach(d => fs.rmSync(d, {recursive: true, force: true}))\"",
+    "postinstall": "patch-package",
     "prebuild": "npm run clean",
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build:renderer": "tsc && vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "build:all": "tsc -p tsconfig.electron.json && vite build",
-    "dist": "npm run build:all && electron-builder --win",
+    "build:all": "npm run build:electron && npm run build:renderer",
+    "build": "npm run build:all && node scripts/run-electron-builder.js",
+    "build:win": "npm run build:all && node scripts/run-electron-builder.js --win",
+    "dist": "npm run build:win",
     "typecheck": "tsc --noEmit",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "preview": "vite preview"
   },
   "dependencies": {
+    "active-win": "^8.2.1",
+    "face-api.js": "^0.22.2",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "lucide-react": "^0.344.0",
@@ -35,6 +41,7 @@
     "cross-env": "^7.0.3",
     "electron": "^29.1.0",
     "electron-builder": "^26.15.3",
+    "patch-package": "^8.0.1",
     "postcss": "^8.4.35",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.3.3",
@@ -44,18 +51,30 @@
   "build": {
     "appId": "com.stitchmonitor.worktrackpro",
     "productName": "WorkTrackPro",
+    "npmRebuild": false,
     "directories": {
-      "output": "release"
+      "output": "release-v9"
     },
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "node_modules/active-win/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "dist/models/**/*",
+      "node_modules/active-win/**/*"
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
           "arch": [
             "x64"
           ]
@@ -69,5 +88,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "WorkTrackPro Agent"
     }
+  },
+  "allowScripts": {
+    "active-win@8.2.1": true
   }
 }

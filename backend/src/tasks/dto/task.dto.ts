@@ -1,4 +1,5 @@
 import {
+  IsEmail,
   IsEnum,
   IsNotEmpty,
   IsOptional,
@@ -29,6 +30,14 @@ export class CreateTaskDto {
   @IsString()
   @IsOptional()
   assignedTo?: string;
+
+  @ApiPropertyOptional({
+    example: 'employee@stitchmonitor.com',
+    description: 'Assign by email instead of user ID; takes precedence over assignedTo.',
+  })
+  @IsEmail()
+  @IsOptional()
+  assignedToEmail?: string;
 
   @ApiPropertyOptional({ enum: TaskStatus, default: TaskStatus.TODO })
   @IsEnum(TaskStatus)

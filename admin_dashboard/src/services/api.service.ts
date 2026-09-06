@@ -152,6 +152,29 @@ class ApiService {
   async getScreenshotsFeed() {
     return this.get('/screenshots/feed');
   }
+
+  /** Create a task assigned to an employee (by email — resolved server-side) */
+  async createTask(dto: {
+    title: string;
+    description?: string;
+    assignedToEmail: string;
+    priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+    dueDate?: string;
+    estimatedMinutes?: number;
+  }) {
+    return this.post('/tasks', dto);
+  }
+
+  /** Fetch tasks — the backend scopes this to "my tasks" for an EMPLOYEE
+   * caller, or all org tasks for a MANAGER/ADMIN caller, based on the JWT. */
+  async getTasks(status?: string) {
+    return this.get(`/tasks${status ? `?status=${status}` : ''}`);
+  }
+
+  /** Mark a task completed */
+  async completeTask(taskId: string) {
+    return this.post(`/tasks/${taskId}/complete`, {});
+  }
 }
 
 export const apiService = new ApiService();

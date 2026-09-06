@@ -1,4 +1,103 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { apiService } from './src/services/api.service';
+import { productivityApiService } from './src/services/productivityApi.service';
+import { useShiftSummary } from './src/hooks/useShiftSummary';
+import { SHIFT_STATE_CHANGED_EVENT } from './src/hooks/useIdleTimeSummary';
+
+/** Lets the "Today, per employee" table (a separate poll on a separate
+ * hook, useIdleTimeSummary) refetch immediately instead of waiting up to
+ * a full 20s poll cycle after this employee's own check-in/out/break
+ * action changes their status. Only helps within the same renderer. */
+function notifyShiftStateChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(SHIFT_STATE_CHANGED_EVENT));
+  }
+}
+
+// How many screenshot entries to keep in each localStorage-persisted list.
+// These are just a "quick paint before the network fetch resolves" cache -
+// the real source of truth is the backend's /screenshots/feed - so a small
+// cap costs nothing functionally.
+const MAX_PERSISTED_SCREENSHOTS = 20;
+
+// Root cause of the QuotaExceededError crashes: entries here carry a full
+// base64 imageUrl (screenshots are routinely 100s of KB to a few MB each),
+// and the lists they were kept in had no size cap, so a work session with
+// many captures reliably blew past localStorage's ~5-10MB per-origin quota.
+// Persisted copies never need the image bytes themselves - only the
+// in-memory React state (which callers still get in full) needs that for
+// immediate rendering; anything reloading from localStorage or the backend
+// feed gets the real image via a fresh URL anyway.
+function stripImageDataForPersistence<T extends { imageUrl?: string }>(item: T): T {
+  if (!item || !item.imageUrl) return item;
+  return { ...item, imageUrl: '' };
+}
+
+/**
+ * localStorage.setItem, but survives QuotaExceededError by dropping the
+ * oldest half of `list` and retrying once rather than losing the write (and
+ * whatever offline-queue/state update depended on it) entirely. Always
+ * strips image data first since that's what makes these payloads large
+ * enough to hit the quota in the first place.
+ */
+function safeSetListItem(key: string, list: any[], maxLength: number = MAX_PERSISTED_SCREENSHOTS): void {
+  const trimmed = list.slice(0, maxLength).map(stripImageDataForPersistence);
+  try {
+    localStorage.setItem(key, JSON.stringify(trimmed));
+  } catch (e) {
+    console.warn(`[localStorage] setItem('${key}') failed (quota?), retrying with half the entries:`, e);
+    try {
+      const half = trimmed.slice(0, Math.max(1, Math.floor(trimmed.length / 2)));
+      localStorage.setItem(key, JSON.stringify(half));
+    } catch (e2) {
+      console.warn(`[localStorage] retry for '${key}' also failed, giving up on this write:`, e2);
+    }
+  }
+}
+
+/**
+ * Root cause of "emps.find is not a function": /api/v1/employees/all
+ * responds through the backend's global TransformInterceptor, which wraps
+ * every payload as { success, data, message } - and this particular
+ * endpoint's own data is itself { totalCount, activeCount, data: [...] }.
+ * So the real employee array lives at json.data.data, not json.data - this
+ * always mis-parsed to the wrapper object (never an array) regardless of
+ * online/offline state, not just as an offline-fallback edge case. Handles
+ * all three shapes other components in this codebase already tolerate
+ * (bare array / json.data.data / json.data), and - per the ask - never
+ * hands back anything but a real array so a caller's .find()/.filter()
+ * can't blow up on it.
+ */
+function extractEmployeeArray(json: any): any[] {
+  if (Array.isArray(json)) return json;
+  if (Array.isArray(json?.data?.data)) return json.data.data;
+  if (Array.isArray(json?.data)) return json.data;
+  return [];
+}
+
+/**
+ * Same idea as safeSetListItem, but for the whole employee `state` object
+ * (persisted under 'stitch_employee_state'), whose `screenshots` field is
+ * the part that was actually growing unbounded with full image data.
+ */
+function safeSetEmployeeState(state: any): void {
+  const slim = {
+    ...state,
+    screenshots: Array.isArray(state?.screenshots)
+      ? state.screenshots.slice(0, MAX_PERSISTED_SCREENSHOTS).map(stripImageDataForPersistence)
+      : state?.screenshots,
+  };
+  try {
+    localStorage.setItem('stitch_employee_state', JSON.stringify(slim));
+  } catch (e) {
+    console.warn('[localStorage] setItem(\'stitch_employee_state\') failed (quota?), retrying with screenshots dropped entirely:', e);
+    try {
+      localStorage.setItem('stitch_employee_state', JSON.stringify({ ...slim, screenshots: [] }));
+    } catch (e2) {
+      console.warn('[localStorage] retry for \'stitch_employee_state\' also failed, giving up on this write:', e2);
+    }
+  }
+}
 
 export interface UserProfile {
   name: string;
@@ -78,7 +177,12 @@ export interface EmployeeContextType {
   sessionHistory: SessionRecordItem[];
   screenshots: ScreenshotRecordItem[];
   weeklyHoursData: DayHours[];
-  
+  // The productivity_service (Supabase) employee id - the key everything
+  // in useShiftSummary/idleTimeTracker/presenceDetector is keyed on. Set
+  // once dashboard.tsx's login bootstrap resolves it via registerEmployee.
+  productivityEmployeeId: string | null;
+  setProductivityEmployeeId: (id: string) => void;
+
   // Actions
   handleCheckIn: () => void;
   handleCheckOut: () => void;
@@ -86,6 +190,26 @@ export interface EmployeeContextType {
   handleCompleteTask: () => void;
   registerNewEmployee: (firstName: string, lastName: string, email: string, role: 'EMPLOYEE' | 'MANAGER', password?: string) => Promise<void>;
   loginEmployee: (email: string, password?: string, requestedRole?: 'EMPLOYEE' | 'MANAGER') => Promise<boolean>;
+}
+
+// Maps the backend's richer shift/idle status enum down into this
+// context's existing SessionState.status vocabulary, so every component
+// that already reads session.status (AttendanceActionCards, WorkSessionScreen,
+// dashboard.tsx) keeps working unchanged.
+function mapBackendStatusToSessionStatus(status: string): SessionState['status'] {
+  switch (status) {
+    case 'NOT_CHECKED_IN':
+      return 'Not Checked In';
+    case 'CHECKED_OUT':
+      return 'Checked Out';
+    case 'ON_BREAK':
+      return 'On Break';
+    default:
+      // ACTIVE | ACTIVE_JABBER | ACTIVE_WILDIX | IDLE | AWAY - all "checked
+      // in and not on break" states collapse to 'Present', matching the
+      // pre-existing vocabulary (only 4 statuses were ever actually used).
+      return 'Present';
+  }
 }
 
 const getInitials = (n: string) => {
@@ -192,10 +316,18 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return getNewSignupBaseline('umer', 'Sohail', 'employee@stitchmonitor.com', 'EMPLOYEE');
   });
 
+  const [productivityEmployeeId, setProductivityEmployeeId] = useState<string | null>(null);
+  // THE single source of truth for active/idle/break/shift-duration/status -
+  // see productivityApi.service.ts's ShiftSummary and the backend's
+  // ProductivityService.get_shift_summary(). Every other component showing
+  // these numbers for one employee should read this same hook rather than
+  // recomputing anything independently.
+  const { summary: shiftSummary, refresh: refreshShiftSummary } = useShiftSummary(productivityEmployeeId);
+
   // Save state changes to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem('stitch_employee_state', JSON.stringify(state));
+      safeSetEmployeeState(state);
     } catch (e) {
       console.log('LocalStorage save error:', e);
     }
@@ -204,11 +336,14 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // STEP 3: TRANSMISSION & STORAGE LOGIC
   const broadcastSharedScreenshot = async (newScreenshot: ScreenshotRecordItem) => {
     try {
-      // Update LocalStorage
+      // Update LocalStorage (capped + stripped of image data - see
+      // safeSetListItem; the full-resolution image already goes out via
+      // BroadcastChannel below for any currently-open tab, and the backend
+      // feed is the real source of truth for anything reloading later)
       const existingStr = localStorage.getItem('stitch_shared_screenshots');
       const existingList = existingStr ? JSON.parse(existingStr) : [];
       const updatedList = [newScreenshot, ...existingList.filter((item: any) => item.id !== newScreenshot.id)];
-      localStorage.setItem('stitch_shared_screenshots', JSON.stringify(updatedList));
+      safeSetListItem('stitch_shared_screenshots', updatedList);
 
       // Broadcast over BroadcastChannel
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -300,56 +435,90 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, [state.session.isActive, state.user.name, state.user.role]);
 
-  // Live Timer Interval
+  // Sync session/metrics from the single source of truth (useShiftSummary)
+  // instead of ticking a local timer - shiftDurationSeconds is already
+  // "time since check-in minus break time" (see get_shift_summary), and
+  // the hook's own internal 1s ticker (only while actively working) keeps
+  // this feeling live without this context needing its own interval.
+  // elapsedSeconds historically meant "total wall-clock time since
+  // check-in, including breaks" - shiftDurationSeconds + breakSeconds
+  // reconstructs that same quantity from the new fields.
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-    if (state.session.isActive) {
-      interval = setInterval(() => {
-        setState((prev: typeof state) => {
-          const nextElapsed = prev.session.elapsedSeconds + 1;
-          const isBreak = prev.session.status === 'On Break';
-          const nextBreak = isBreak ? prev.session.breakSeconds + 1 : prev.session.breakSeconds;
-          const nextActive = Math.max(0, nextElapsed - nextBreak);
-          
-          const target = prev.metrics.targetHoursSeconds || 28800;
-          const timeEfficiency = Math.min(nextActive / target, 1);
-          const taskCompletionRate = prev.metrics.totalTasksAssigned > 0 
-            ? prev.metrics.completedTasks / prev.metrics.totalTasksAssigned 
-            : 0;
-          
-          const calcProductivity = prev.metrics.totalTasksAssigned > 0 
-            ? Math.round(((timeEfficiency * 0.5) + (taskCompletionRate * 0.5)) * 100)
-            : Math.round(timeEfficiency * 100);
+    if (!shiftSummary) return;
 
-          return {
-            ...prev,
-            session: {
-              ...prev.session,
-              elapsedSeconds: nextElapsed,
-              breakSeconds: nextBreak,
-            },
-            metrics: {
-              ...prev.metrics,
-              todayHoursSeconds: nextElapsed,
-              activeTimeSeconds: nextActive,
-              productivityScore: calcProductivity,
-            }
-          };
-        });
-      }, 1000);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [state.session.isActive]);
+    setState((prev: typeof state) => {
+      const nextActive = shiftSummary.shiftDurationSeconds;
+      const nextBreak = shiftSummary.breakSeconds;
+      const nextElapsed = nextActive + nextBreak;
+      const nextStatus = mapBackendStatusToSessionStatus(shiftSummary.status);
+      const nextIsActive = shiftSummary.status !== 'NOT_CHECKED_IN' && shiftSummary.status !== 'CHECKED_OUT';
+
+      const target = prev.metrics.targetHoursSeconds || 28800;
+      const timeEfficiency = Math.min(nextActive / target, 1);
+      const taskCompletionRate = prev.metrics.totalTasksAssigned > 0
+        ? prev.metrics.completedTasks / prev.metrics.totalTasksAssigned
+        : 0;
+      const calcProductivity = prev.metrics.totalTasksAssigned > 0
+        ? Math.round(((timeEfficiency * 0.5) + (taskCompletionRate * 0.5)) * 100)
+        : Math.round(timeEfficiency * 100);
+
+      return {
+        ...prev,
+        session: {
+          ...prev.session,
+          isActive: nextIsActive,
+          elapsedSeconds: nextElapsed,
+          breakSeconds: nextBreak,
+          status: nextStatus,
+        },
+        metrics: {
+          ...prev.metrics,
+          todayHoursSeconds: nextElapsed,
+          activeTimeSeconds: nextActive,
+          productivityScore: calcProductivity,
+        },
+      };
+    });
+  }, [shiftSummary]);
 
   // Check In
+  // Resolves the productivity_service employee id if dashboard.tsx's login
+  // bootstrap hasn't finished yet by the time the user clicks Check In -
+  // registerEmployee is idempotent server-side, so this is safe even if
+  // the bootstrap effect also calls it moments later.
+  const ensureProductivityEmployeeId = async (): Promise<string | null> => {
+    if (productivityEmployeeId) return productivityEmployeeId;
+    try {
+      const employee = await productivityApiService.registerEmployee(
+        state.user.name || 'Employee',
+        state.user.email,
+      );
+      setProductivityEmployeeId(employee.id);
+      return employee.id;
+    } catch (e) {
+      console.warn('[EmployeeContext] Failed to resolve productivity employee id:', e);
+      return null;
+    }
+  };
+
   const handleCheckIn = async () => {
     const startTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const realImg = await captureRealLiveDesktopScreen(
       state.user.name || 'umer Sohail',
       'Full Stack Engineer'
     );
+
+    const syncShiftCheckIn = async () => {
+      const id = await ensureProductivityEmployeeId();
+      if (!id) return;
+      try {
+        await productivityApiService.checkInShift(id);
+        await refreshShiftSummary();
+        notifyShiftStateChanged();
+      } catch (e) {
+        console.warn('[EmployeeContext] Failed to log shift check-in:', e);
+      }
+    };
 
     if (!realImg) {
       console.warn('Check-in capture skipped: no real screenshot available.');
@@ -368,6 +537,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           activeTimeSeconds: 0,
         },
       }));
+      await syncShiftCheckIn();
       return;
     }
 
@@ -414,8 +584,8 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const listRes = await fetch('http://localhost:3000/api/v1/employees/all');
       if (listRes.ok) {
         const json = await listRes.json();
-        const emps = Array.isArray(json) ? json : (json?.data || []);
-        const target = emps.find((e: any) => 
+        const emps = extractEmployeeArray(json);
+        const target = emps.find((e: any) =>
           (e.email && state.user.email && e.email.toLowerCase() === state.user.email.toLowerCase()) ||
           (e.name && state.user.name && e.name.toLowerCase().includes(state.user.name.toLowerCase()))
         );
@@ -426,10 +596,12 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     } catch (e) {
       console.warn('Check-in backend sync fallback:', e);
     }
+
+    await syncShiftCheckIn();
   };
 
   // Check Out
-  const handleCheckOut = () => {
+  const handleCheckOut = async () => {
     setState((prev: typeof state) => {
       const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const todayDate = new Date().toISOString().split('T')[0];
@@ -496,8 +668,8 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     try {
       fetch('http://localhost:3000/api/v1/employees/all').then(res => res.json()).then(json => {
-        const emps = Array.isArray(json) ? json : (json?.data || []);
-        const target = emps.find((e: any) => 
+        const emps = extractEmployeeArray(json);
+        const target = emps.find((e: any) =>
           (e.email && state.user.email && e.email.toLowerCase() === state.user.email.toLowerCase()) ||
           (e.name && state.user.name && e.name.toLowerCase().includes(state.user.name.toLowerCase()))
         );
@@ -508,10 +680,26 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     } catch (e) {
       console.warn('Check-out backend sync fallback:', e);
     }
+
+    if (productivityEmployeeId) {
+      try {
+        await productivityApiService.checkOutShift(productivityEmployeeId);
+        await refreshShiftSummary();
+        notifyShiftStateChanged();
+      } catch (e) {
+        console.warn('[EmployeeContext] Failed to log shift check-out:', e);
+      }
+    }
   };
 
   // Toggle Break
-  const handleToggleBreak = () => {
+  const handleToggleBreak = async () => {
+    const startingBreak = state.session.status !== 'On Break';
+
+    // Optimistic local flip for instant button feedback - the next
+    // shiftSummary poll/refresh corrects this to the server's authoritative
+    // status regardless, so a failed request self-heals rather than
+    // leaving the UI stuck showing the wrong state.
     setState((prev: typeof state) => ({
       ...prev,
       session: {
@@ -519,6 +707,19 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         status: prev.session.status === 'On Break' ? 'Present' : 'On Break',
       }
     }));
+
+    if (!productivityEmployeeId) return;
+    try {
+      if (startingBreak) {
+        await productivityApiService.startBreak(productivityEmployeeId);
+      } else {
+        await productivityApiService.endBreak(productivityEmployeeId);
+      }
+      await refreshShiftSummary();
+      notifyShiftStateChanged();
+    } catch (e) {
+      console.warn('[EmployeeContext] Failed to sync break toggle:', e);
+    }
   };
 
   // Complete Task
@@ -582,7 +783,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const newBaseline = getNewSignupBaseline(cleanFirstName, cleanLastName, email, role);
     setState(newBaseline);
-    localStorage.setItem('stitch_employee_state', JSON.stringify(newBaseline));
+    safeSetEmployeeState(newBaseline);
   };
 
   // Login Employee or Manager
@@ -615,12 +816,22 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         throw new Error('Invalid login response from server');
       }
 
-      if (requestedRole === 'MANAGER' && u.role !== 'ADMIN' && cleanEmail !== 'taqikhawaja777@gmail.com') {
+      const tokens = json.data?.tokens || json.tokens;
+      if (tokens?.accessToken) {
+        // Persist the JWT so subsequent authenticated calls (e.g. task
+        // creation/assignment) via apiService carry a valid Bearer token —
+        // previously discarded here, so every JwtAuthGuard-protected
+        // endpoint was unreachable from this app.
+        apiService.setToken(tokens.accessToken);
+      }
+
+      const canAccessManagerDashboard = u.role === 'ADMIN' || u.role === 'MANAGER';
+      if (requestedRole === 'MANAGER' && !canAccessManagerDashboard) {
         throw new Error('Only authorized Manager accounts can access the Manager Dashboard.');
       }
 
       const fullName = `${u.firstName || ''} ${u.lastName || ''}`.trim() || cleanEmail.split('@')[0];
-      const isManagerAccount = cleanEmail === 'taqikhawaja777@gmail.com' || u.role === 'ADMIN' || requestedRole === 'MANAGER';
+      const isManagerAccount = canAccessManagerDashboard;
       const fetchedUser: UserProfile = {
         name: fullName,
         email: u.email,
@@ -650,6 +861,8 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         sessionHistory: state.sessionHistory,
         screenshots: state.screenshots,
         weeklyHoursData: state.weeklyHoursData,
+        productivityEmployeeId,
+        setProductivityEmployeeId,
         handleCheckIn,
         handleCheckOut,
         handleToggleBreak,

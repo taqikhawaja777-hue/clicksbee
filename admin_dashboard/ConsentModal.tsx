@@ -81,7 +81,6 @@ export const ConsentModal: React.FC<ConsentModalProps> = ({
                 <li>Full Desktop Screen Captures</li>
                 <li>Active Application & Window Titles</li>
                 <li>System Idle vs Active Work Duration</li>
-                <li>Short 15-30s On-Demand Video Clips</li>
               </ul>
             </div>
 
@@ -114,7 +113,7 @@ export const ConsentModal: React.FC<ConsentModalProps> = ({
                 <span>4. Auto-Deletion Retention</span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                All screenshots and recordings are automatically purged after 60 days via scheduled BullMQ retention jobs.
+                All screenshots are automatically purged after 60 days via scheduled BullMQ retention jobs.
               </p>
             </div>
 
@@ -127,7 +126,7 @@ export const ConsentModal: React.FC<ConsentModalProps> = ({
               <span>5. Pause & Privacy Controls (Section 2.3)</span>
             </div>
             <p className="text-emerald-800 dark:text-emerald-200 leading-relaxed">
-              You can click <strong>"Pause Monitoring"</strong> at any time for personal breaks. While paused, no screenshots or video clips are recorded. Excluded applications (such as password managers or banking apps) are automatically excluded from capture.
+              You can click <strong>"Pause Monitoring"</strong> at any time for personal breaks. While paused, no screenshots are captured. Excluded applications (such as password managers or banking apps) are automatically excluded from capture.
             </p>
           </div>
 

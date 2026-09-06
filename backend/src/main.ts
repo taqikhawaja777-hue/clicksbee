@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -7,7 +8,16 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Screenshot/recording-adjacent endpoints (screenshots/capture,
+  // recordings historically) send base64-encoded image data in the JSON
+  // body, which routinely exceeds Express's default 100kb body-parser
+  // limit - that mismatch is what's been causing
+  // "PayloadTooLargeError: request entity too large" / 500s on
+  // /api/v1/screenshots/capture.
+  app.useBodyParser('json', { limit: '15mb' });
+  app.useBodyParser('urlencoded', { limit: '15mb', extended: true });
 
   app.use(helmet());
   const frontendOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')

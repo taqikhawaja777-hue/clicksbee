@@ -43,7 +43,9 @@ async function main() {
   });
 
   // Create Manager
-  const managerPasswordHash = await argon2.hash('Manager@123!');
+  const managerPasswordHash = await argon2.hash(
+    process.env.SEED_MANAGER_PASSWORD || 'Manager@123!',
+  );
   const manager = await prisma.user.upsert({
     where: { email: 'manager@acme.corp' },
     update: {},

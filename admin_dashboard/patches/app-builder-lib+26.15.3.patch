@@ -1,0 +1,30 @@
+diff --git a/node_modules/app-builder-lib/out/util/electronGet.js b/node_modules/app-builder-lib/out/util/electronGet.js
+index a941f9d..8fd22d3 100644
+--- a/node_modules/app-builder-lib/out/util/electronGet.js
++++ b/node_modules/app-builder-lib/out/util/electronGet.js
+@@ -184,7 +184,24 @@ async function extractArchive(file, dir) {
+             throw new Error(`Extraction of ${path.basename(file)} produced no files`);
+         }
+         await fs.rm(dir, { recursive: true, force: true });
+-        await fs.rename(tmpDir, dir);
++        // PATCHED: on Windows, a freshly-written file's OS-level handle can still be
++        // closing microseconds after Node reports the write stream "finished" (a known
++        // Node/libuv-on-Windows race), which makes an immediate rename of the parent
++        // directory fail with EPERM/EBUSY even with no antivirus involved. Retry with
++        // backoff instead of failing the whole build on a transient race.
++        for (let attempt = 1; ; attempt++) {
++            try {
++                await fs.rename(tmpDir, dir);
++                break;
++            }
++            catch (err) {
++                if (attempt >= 10 || !["EPERM", "EBUSY", "ENOTEMPTY"].includes(err.code)) {
++                    throw err;
++                }
++                builder_util_1.log.warn({ err: err.message, attempt }, "rename of extracted electron dir failed, retrying");
++                await new Promise(r => setTimeout(r, 500 * attempt));
++            }
++        }
+     }
+     finally {
+         await release().catch(err => builder_util_1.log.warn({ err }, "failed to release lockfile"));

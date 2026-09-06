@@ -15,8 +15,8 @@ WorkTrackPro is designed with **100% Employee Self-Visibility**. The platform co
    - Logs application focus names and window headers to compute shift productivity metrics.
 3. **Work Session & Idle Time**:
    - Tracks active vs idle keyboard/mouse time. System idle time exceeding 60 seconds is logged as `IDLE_STARTED`.
-4. **Short Video Clips (Optional)**:
-   - On-demand 15–30 second video recordings triggered manually by authorized managers or specific policy events.
+4. **Camera Presence Detection (optional, off by default)**:
+   - Only active if your organization has specifically enabled it for you — see Section 4 below. Never runs otherwise.
 
 ---
 
@@ -42,27 +42,38 @@ Before any desktop monitoring or screen capture begins:
 
 ---
 
-## 4. Pause / Blackout Control (Section 2.3)
+## 4. Optional Camera Presence Monitoring
+
+Unlike everything in Section 1-3, this is **off by default and requires your explicit, separate consent** even after your organization enables it for your team:
+
+- If enabled for you, a dedicated consent screen explains the feature and requires you to click **"I Agree"** or **"Decline"** before it activates. Declining has no effect on any other part of the app — you simply keep the standard input-based idle tracking.
+- **What it does**: every 15-30 seconds, your webcam briefly activates (you'll see your device's camera indicator light), captures one frame, and checks — on your own machine — whether a face is present.
+- **What it never does**: the image itself is never saved, uploaded, or viewable by anyone, including your manager or system administrators. Only a yes/no result and a timestamp are ever recorded. No facial recognition or identification takes place — only presence detection.
+- **Why it's combined with idle tracking**: a moment only counts as idle if you're both away from the camera *and* not using your mouse/keyboard, so reading or thinking at your desk isn't flagged as idle.
+- Every consent decision (accept or decline) is itself logged with a timestamp, and you can decline at any time with no effect on your other monitoring data.
+
+---
+
+## 5. Pause / Blackout Control (Section 2.3)
 
 You retain control over your personal moments during work shifts:
 - Click **"Pause Monitoring"** in the top banner or system tray to take a break or make a personal phone call.
 - **While Paused**:
   - NO screenshots are taken.
-  - NO video clips are recorded.
   - NO live streams are transmitted.
 - **Auto-Resume**: Pause auto-resumes after 15 minutes (with an in-app nudge allowing you to resume or extend).
 - Duration is logged as `PAUSED` so full-day gaps do not occur without a record.
 
 ---
 
-## 5. Automated Data Retention & Deletion (60 Days)
+## 6. Automated Data Retention & Deletion (60 Days)
 
-- All screenshots, activity logs, and video recordings are retained for a maximum of **60 days**.
+- All screenshots and activity logs are retained for a maximum of **60 days**.
 - Scheduled **BullMQ retention background jobs** automatically purge files and database records older than 60 days.
 - Audit logs track all data purges and viewing events.
 
 ---
 
-## 6. Support & Privacy Questions
+## 7. Support & Privacy Questions
 
 If you have questions regarding your data privacy rights, contact your organization's Human Resources department or System Administrator.

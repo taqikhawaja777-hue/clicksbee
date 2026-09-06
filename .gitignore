@@ -10,6 +10,9 @@ node_modules/
 dist/
 dist-electron/
 release/
+admin_dashboard/release*/
+admin_dashboard/dist-installer*/
+admin_dashboard/.electron-dist/
 .vite/
 coverage/
 admin_dashboard/build_dist/
@@ -21,3 +24,9 @@ backend/storage/
 *.log
 .vscode/
 *.tsbuildinfo
+
+# Python (productivity_service)
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

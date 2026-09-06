@@ -214,32 +214,6 @@ export function registerCaptureIpcHandlers(): void {
     return results;
   });
 
-  // Video Recording IPC Triggers
-  ipcMain.handle('start-video-recording', async (_event, userId?: string, orgId?: string, title?: string) => {
-    try {
-      const recorder = require('../src/main/services/screenRecorder');
-      if (recorder?.startDesktopRecording) {
-        await recorder.startDesktopRecording(userId || 'emp-101', orgId || 'org-101', title || 'Manager Session Video Recording');
-      }
-      return { success: true };
-    } catch (e) {
-      console.warn('[CaptureService] start-video-recording failed:', e);
-      return { success: false, error: (e as Error).message };
-    }
-  });
-
-  ipcMain.handle('stop-video-recording', async () => {
-    try {
-      const recorder = require('../src/main/services/screenRecorder');
-      if (recorder?.stopDesktopRecording) {
-        recorder.stopDesktopRecording();
-      }
-      return { success: true };
-    } catch (e) {
-      return { success: false, error: (e as Error).message };
-    }
-  });
-
   // Start 5-minute automated background loop
   startAutomated5MinScreenCaptureLoop(5);
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, 
   Users,
@@ -6,8 +6,7 @@ import {
   Clock, 
   Monitor, 
   TrendingUp, 
-  Camera, 
-  Video, 
+  Camera,
   FileText,
   LogOut, 
   Search, 
@@ -26,7 +25,9 @@ import {
   Filter,
   Play,
   Pause,
-  CheckSquare
+  CheckSquare,
+  ClipboardList,
+  PlusCircle
 } from 'lucide-react';
 import { ThisMonthWidget } from './ThisMonthWidget';
 import { AttendanceActionCards } from './AttendanceActionCards';
@@ -36,7 +37,7 @@ import { AttendanceHistoryTable } from './AttendanceHistoryTable';
 import { WorkSessionScreen } from './WorkSessionScreen';
 import { ProductivityHighlightsBanner } from './ProductivityHighlightsBanner';
 import { ScreenshotsView } from './ScreenshotsView';
-import { RecordingsView } from './RecordingsView';
+import { IdleTimeView } from './IdleTimeView';
 import { AuthScreen } from './AuthScreen';
 import { ManagerDashboard } from './ManagerDashboard';
 import { ManagerAttendanceView } from './ManagerAttendanceView';
@@ -45,8 +46,14 @@ import { ReportsView } from './ReportsView';
 import { ManagerNotificationsView } from './ManagerNotificationsView';
 import { ManagerSettingsView } from './ManagerSettingsView';
 import { ConsentModal } from './ConsentModal';
+import { CameraConsentModal } from './CameraConsentModal';
 import { MonitoringBanner } from './MonitoringBanner';
+import { TaskProductivityDashboard } from './TaskProductivityDashboard';
+import { CreateTaskPanel } from './CreateTaskPanel';
+import { MyTasksView } from './MyTasksView';
 import { useEmployee } from './EmployeeContext';
+import { apiService } from './src/services/api.service';
+import { productivityApiService } from './src/services/productivityApi.service';
 
 interface ActivityItem {
   id: string;
@@ -58,19 +65,27 @@ interface ActivityItem {
 }
 
 export const AdminDashboard: React.FC = () => {
-  const { 
-    user, 
-    session, 
-    metrics, 
+  const {
+    user,
+    session,
+    metrics,
     weeklyHoursData,
-    handleCheckIn, 
-    handleCheckOut, 
-    handleCompleteTask
+    handleCheckIn,
+    handleCheckOut,
+    handleCompleteTask,
+    setProductivityEmployeeId: setContextProductivityEmployeeId,
   } = useEmployee();
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('stitch_is_authenticated') === 'true';
+      // A cached "authenticated" flag with no JWT alongside it means the
+      // session predates token persistence (or the token was cleared) —
+      // treat it as logged out rather than letting every guarded API call
+      // fail with a confusing "Unauthorized" deep in the app.
+      return (
+        localStorage.getItem('stitch_is_authenticated') === 'true' &&
+        !!localStorage.getItem('auth_token')
+      );
     } catch (e) {
       return false;
     }
@@ -91,6 +106,94 @@ export const AdminDashboard: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedTimeframe, setSelectedTimeframe] = useState<'This Week' | 'Last Week' | 'This Month'>('This Week');
 
+  // Camera consent modal: non-null employeeId means "show it now". Only
+  // ever set if an admin has enabled camera monitoring for this employee
+  // AND they haven't already made a decision (accept or decline) before.
+  const [cameraConsentEmployeeId, setCameraConsentEmployeeId] = useState<string | null>(null);
+  const [productivityEmployeeId, setProductivityEmployeeId] = useState<string | null>(null);
+  const cameraDetectionStartedRef = useRef(false);
+
+  // Bootstrap the whole-day idle/active tracker once per login: registers
+  // (or looks up) this user's productivity-service employee record, then
+  // starts the Electron main-process tracker over IPC. Registration is
+  // idempotent server-side, so this is safe to fire on every launch.
+  const idleTrackingStartedRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated || !user.email || idleTrackingStartedRef.current) return;
+    idleTrackingStartedRef.current = true;
+
+    (async () => {
+      try {
+        const employee = await productivityApiService.registerEmployee(user.name || 'Employee', user.email);
+        setProductivityEmployeeId(employee.id);
+        setContextProductivityEmployeeId(employee.id);
+        const electron = (window as any).require?.('electron');
+        const ipcRenderer = electron?.ipcRenderer;
+        if (ipcRenderer?.invoke) {
+          await ipcRenderer.invoke('start-idle-time-tracking', { employeeId: employee.id });
+        }
+      } catch (e) {
+        console.warn('[IdleTimeTracker] Failed to bootstrap idle-time tracking:', e);
+        idleTrackingStartedRef.current = false;
+      }
+    })();
+  }, [isAuthenticated, user.email, user.name]);
+
+  // Poll (rather than check once) whether an admin has turned camera
+  // monitoring on for this employee, since that can happen at any time
+  // after the app is already open — a one-time check at login would miss
+  // it if the admin enables it mid-session, which is exactly what was
+  // happening before this was a poll.
+  useEffect(() => {
+    if (!productivityEmployeeId) return;
+
+    let cancelled = false;
+
+    const checkCameraConfig = async () => {
+      if (cancelled || cameraDetectionStartedRef.current) return;
+      try {
+        const cameraConfig = await productivityApiService.getCameraConfig(productivityEmployeeId);
+        if (!cameraConfig.effectiveEnabled) return;
+
+        const existingConsent = await productivityApiService.getCameraConsent(productivityEmployeeId);
+        if (cancelled) return;
+
+        if (!existingConsent) {
+          setCameraConsentEmployeeId((prev) => prev ?? productivityEmployeeId);
+        } else if (existingConsent.consented) {
+          cameraDetectionStartedRef.current = true;
+          const { presenceDetectionService } = await import('./src/services/presenceDetector');
+          presenceDetectionService.start(productivityEmployeeId);
+        }
+      } catch (e) {
+        console.warn('[CameraConsent] Failed to check camera-monitoring config:', e);
+      }
+    };
+
+    checkCameraConfig();
+    const interval = setInterval(checkCameraConfig, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [productivityEmployeeId]);
+
+  const handleCameraConsentDecision = async (consented: boolean) => {
+    const employeeId = cameraConsentEmployeeId;
+    if (!employeeId) return;
+    setCameraConsentEmployeeId(null);
+    try {
+      await productivityApiService.recordCameraConsent(employeeId, consented);
+      if (consented) {
+        cameraDetectionStartedRef.current = true;
+        const { presenceDetectionService } = await import('./src/services/presenceDetector');
+        presenceDetectionService.start(employeeId);
+      }
+    } catch (e) {
+      console.warn('[CameraConsent] Failed to record camera-monitoring consent decision:', e);
+    }
+  };
+
   if (!isAuthenticated) {
     return (
       <AuthScreen 
@@ -105,6 +208,14 @@ export const AdminDashboard: React.FC = () => {
   // Section 2.1: Non-dismissable consent modal on launch for Employee role
   if (!hasConsented && user.role === 'EMPLOYEE') {
     return <ConsentModal policyVersion="1.0.0" onConsentAccepted={() => setHasConsented(true)} />;
+  }
+
+  // Camera-monitoring consent: only shown when an admin has enabled the
+  // feature for this employee and they haven't answered yet. Both Accept
+  // and Decline dismiss it — unlike the base consent modal, declining is a
+  // fully valid outcome (falls back to input-only tracking).
+  if (cameraConsentEmployeeId) {
+    return <CameraConsentModal onDecision={handleCameraConsentDecision} />;
   }
 
   const formatDuration = (totalSecs: number) => {
@@ -127,8 +238,10 @@ export const AdminDashboard: React.FC = () => {
         { name: 'Live Monitor', icon: Radio, badge: 'LIVE', badgeColor: 'bg-rose-500 text-white' },
         { name: 'Attendance', icon: Clock },
         { name: 'Productivity', icon: TrendingUp },
+        { name: 'Task Productivity', icon: ClipboardList },
+        { name: 'Create Task', icon: PlusCircle },
         { name: 'Screenshots', icon: Camera },
-        { name: 'Recordings', icon: Video },
+        { name: 'Idle Time', icon: Activity },
         { name: 'Reports', icon: FileText },
         { name: 'Notifications', icon: Bell, badge: '5', badgeColor: 'bg-indigo-600 text-white' },
         { name: 'Settings', icon: Settings },
@@ -137,9 +250,11 @@ export const AdminDashboard: React.FC = () => {
         { name: 'Dashboard', icon: LayoutDashboard },
         { name: 'Attendance', icon: Clock },
         { name: 'Work Session', icon: Monitor },
+        { name: 'My Tasks', icon: CheckSquare },
         { name: 'Productivity', icon: TrendingUp },
+        { name: 'Task Productivity', icon: ClipboardList },
         { name: 'Screenshots', icon: Camera },
-        { name: 'Recordings', icon: Video },
+        { name: 'Idle Time', icon: Activity },
       ];
 
   const recentActivities: ActivityItem[] = [
@@ -256,6 +371,7 @@ export const AdminDashboard: React.FC = () => {
           <button 
             onClick={() => {
               localStorage.removeItem('stitch_is_authenticated');
+              apiService.clearToken();
               setIsAuthenticated(false);
             }}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3 px-4'} py-3 text-rose-500 hover:bg-rose-500/10 rounded-xl font-medium text-sm transition-colors cursor-pointer`}
@@ -404,6 +520,10 @@ export const AdminDashboard: React.FC = () => {
             <ManagerNotificationsView />
           ) : user.role === 'MANAGER' && activeNav === 'Settings' ? (
             <ManagerSettingsView />
+          ) : user.role === 'MANAGER' && activeNav === 'Create Task' ? (
+            <CreateTaskPanel />
+          ) : activeNav === 'My Tasks' ? (
+            <MyTasksView />
           ) : activeNav === 'Attendance' ? (
             <div className="space-y-6">
               <AttendanceActionCards />
@@ -487,10 +607,12 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               </div>
             </div>
+          ) : activeNav === 'Task Productivity' ? (
+            <TaskProductivityDashboard />
           ) : activeNav === 'Screenshots' ? (
             <ScreenshotsView />
-          ) : activeNav === 'Recordings' ? (
-            <RecordingsView />
+          ) : activeNav === 'Idle Time' ? (
+            <IdleTimeView />
           ) : (
             /* DEFAULT DASHBOARD VIEW */
             <>
@@ -659,7 +781,7 @@ export const AdminDashboard: React.FC = () => {
                           />
                         </div>
                         <span className="text-xs font-semibold text-slate-400 mt-3">{item.day}</span>
-                        <span className="text-[10px] text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity absolute -top-6 bg-slate-800 text-white px-2 py-0.5 rounded shadow">
+                        <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity absolute -top-6 bg-slate-800 text-white px-2 py-0.5 rounded shadow">
                           {item.hours}h
                         </span>
                       </div>

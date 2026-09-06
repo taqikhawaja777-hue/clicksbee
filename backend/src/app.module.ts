@@ -26,7 +26,6 @@ import { LiveModule } from './live/live.module';
 import { SyncModule } from './sync/sync.module';
 import { TasksCleanupModule } from './common/tasks/tasks.module';
 import { ConsentModule } from './consent/consent.module';
-import { RecordingsModule } from './recordings/recordings.module';
 import { MonitorModule } from './monitor/monitor.module';
 import { AiAnalyticsController } from './controllers/aiAnalyticsController';
 import { HealthController } from './health.controller';
@@ -66,7 +65,6 @@ import { HealthController } from './health.controller';
     SyncModule,
     TasksCleanupModule,
     ConsentModule,
-    RecordingsModule,
     MonitorModule,
   ],
   controllers: [AiAnalyticsController, HealthController],

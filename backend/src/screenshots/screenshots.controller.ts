@@ -86,6 +86,8 @@ export class ScreenshotsController {
     @Query('userId') userIdFilter?: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
   ) {
     return this.screenshotsService.getScreenshots(
       organizationId,
@@ -94,6 +96,8 @@ export class ScreenshotsController {
       userIdFilter,
       page ? +page : 1,
       limit ? +limit : 20,
+      startDate,
+      endDate,
     );
   }
 

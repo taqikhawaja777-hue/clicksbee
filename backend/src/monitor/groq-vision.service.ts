@@ -17,7 +17,7 @@ export interface VisionAnalysisResult {
 @Injectable()
 export class GroqVisionService {
   private readonly logger = new Logger(GroqVisionService.name);
-  private groq: Groq;
+  private groq?: Groq;
   private readonly visionModel: string;
 
   constructor(private readonly configService: ConfigService) {
@@ -25,11 +25,11 @@ export class GroqVisionService {
       this.configService.get<string>('GROQ_API_KEY') ||
       this.configService.get<string>('LLM_API_KEY');
 
-    if (!apiKey) {
-      throw new Error('GROQ_API_KEY or LLM_API_KEY must be configured');
+    if (apiKey) {
+      this.groq = new Groq({ apiKey });
+    } else {
+      this.logger.warn('Groq vision analysis is disabled because no API key is configured');
     }
-
-    this.groq = new Groq({ apiKey });
 
     this.visionModel =
       this.configService.get<string>('GROQ_VISION_MODEL') ||
@@ -51,6 +51,10 @@ export class GroqVisionService {
       detectedApps: ['VS Code'],
       concerns: [],
     };
+
+    if (!this.groq) {
+      return defaultResult;
+    }
 
     try {
       const promptText = `Analyze this employee desktop screenshot. Return JSON only:

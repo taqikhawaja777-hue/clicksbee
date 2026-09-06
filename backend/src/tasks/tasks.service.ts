@@ -16,6 +16,18 @@ export class TasksService {
   ) {}
 
   async createTask(userId: string, organizationId: string, dto: CreateTaskDto) {
+    let assignedTo = dto.assignedTo || userId;
+
+    if (dto.assignedToEmail) {
+      const assignee = await this.prisma.user.findUnique({
+        where: { email: dto.assignedToEmail.toLowerCase().trim() },
+      });
+      if (!assignee || assignee.organizationId !== organizationId) {
+        throw new NotFoundException(`No employee found with email ${dto.assignedToEmail}`);
+      }
+      assignedTo = assignee.id;
+    }
+
     let estimatedTimeMinutes = dto.estimatedMinutes || 0;
 
     if (!estimatedTimeMinutes || estimatedTimeMinutes === 0) {
@@ -35,7 +47,7 @@ export class TasksService {
       data: {
         organizationId,
         projectId: dto.projectId,
-        assignedTo: dto.assignedTo || userId,
+        assignedTo,
         assignedBy: userId,
         title: dto.title,
         description: dto.description,

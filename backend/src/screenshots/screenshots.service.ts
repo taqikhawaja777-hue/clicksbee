@@ -82,6 +82,7 @@ export class ScreenshotsService {
         fileName: fileName,
         filePath: filePath,
         fileUrl: fileUrl,
+        activeWindowName: dto.activeWindowName || null,
         fileSize: fileSize,
         mimeType: 'image/png',
         isBlurred: false,
@@ -132,7 +133,7 @@ export class ScreenshotsService {
       date: item.capturedAt.toISOString().split('T')[0],
       imageUrl: item.fileUrl,
       isIdle: false,
-      activeWindowName: 'Active Workstation Screen (File Explorer / My Computer)',
+      activeWindowName: item.activeWindowName || 'Active Workstation Screen (File Explorer / My Computer)',
       screenshotNumber: 1,
       totalTodayCount: 1,
     }));
@@ -201,6 +202,8 @@ export class ScreenshotsService {
     userIdFilter?: string,
     page = 1,
     limit = 20,
+    startDate?: string,
+    endDate?: string,
   ) {
     const where: any = { organizationId };
 
@@ -208,6 +211,15 @@ export class ScreenshotsService {
       where.userId = reqUserId;
     } else if (userIdFilter) {
       where.userId = userIdFilter;
+    }
+
+    // Date range for the Screenshot Report - inclusive of the whole
+    // endDate day, matching how every other report/date-range query in
+    // this app treats its end boundary.
+    if (startDate || endDate) {
+      where.capturedAt = {};
+      if (startDate) where.capturedAt.gte = new Date(`${startDate}T00:00:00.000Z`);
+      if (endDate) where.capturedAt.lte = new Date(`${endDate}T23:59:59.999Z`);
     }
 
     const skip = (page - 1) * limit;
