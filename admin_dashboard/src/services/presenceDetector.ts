@@ -23,6 +23,16 @@
  *   also independently enforces this in insert_presence_log) and that
  *   camera monitoring is enabled (globally AND for this employee) before
  *   touching the camera at all.
+ * - LIVE PREVIEW (attachPresencePreview, added later): the current frame is
+ *   optionally mirrored onto a <canvas> the employee's own
+ *   PresenceVerificationCard renders, so they can see what the detector
+ *   sees and confirm they're actually in frame. This is a deliberate,
+ *   explicit product decision (confirmed with the employer, reversing an
+ *   earlier "never shown" stance) - the frame is still only ever drawn
+ *   locally into that one employee's own already-open window. It is still
+ *   never captured to a file, uploaded, sent to the backend, or visible to
+ *   a manager/anyone else - only this same live boolean-and-timestamp pair
+ *   ever leaves this machine, unchanged from before.
  *
  * CAMERA LIFECYCLE — changed from "acquire fresh every 20s" to a single
  * persistent stream (see ensureCameraStream() below). The original design
@@ -43,8 +53,20 @@
 import * as faceapi from 'face-api.js';
 
 const MODEL_URL = './models';
-const POLL_INTERVAL_MS = 20000; // matches PRESENCE_POLL_INTERVAL_SECONDS server-side
+const POLL_INTERVAL_MS = 15000; // matches PRESENCE_POLL_INTERVAL_SECONDS server-side - per-request cadence for idle detection (face + input combined check)
 const AWAY_THRESHOLD_SECONDS = 600; // 10 minutes with no face and no input -> "away" rather than "idle"
+// TinyFaceDetector's default inputSize (416) downscales a 640x480 frame
+// enough that a face at typical webcam distance shrinks to where the model
+// only produces ~0.05-0.07 confidence for it - real detection, just too
+// faint to clear the (correct, standard) 0.5 threshold. Proven via direct
+// instrumentation: the raw pixel tensor TF.js reads matches the canvas's
+// own pixels almost exactly (ruling out any camera/env/pipeline bug), so
+// this is the model seeing a genuine but under-scale face, not garbage
+// input. Bumping to 608 (max of face-api.js's supported sizes: 128/160/
+// 224/320/416/512/608) keeps more of the face's actual detail through the
+// resize, which is TinyFaceDetector's own documented fix for this exact
+// low-but-nonzero-confidence pattern.
+const FACE_DETECTOR_INPUT_SIZE = 608;
 
 let modelLoadPromise: Promise<void> | null = null;
 
@@ -211,7 +233,18 @@ async function ensureCameraStream(): Promise<HTMLVideoElement | null> {
       cameraVideo = video;
       return video;
     } catch (err) {
-      console.warn('[PresenceDetector] Could not acquire camera stream (unavailable/denied?):', err);
+      // Electron's console-message bridge (main.ts) only gets a flattened
+      // string, not the original object - logging `err` as a second arg
+      // collapses to the useless "[object DOMException]" by the time it
+      // reaches main.ts's forwarded output. Pulling name/message into the
+      // template string itself is the only way they survive that bridge -
+      // needed here specifically because those two fields are what
+      // distinguish "no permission" (NotAllowedError) from "device already
+      // in use by something else" (NotReadableError) from "no camera found"
+      // (NotFoundError), which otherwise look identical from this call site.
+      const name = (err as DOMException)?.name || typeof err;
+      const message = (err as DOMException)?.message || String(err);
+      console.warn(`[PresenceDetector] Could not acquire camera stream: ${name} - ${message}`);
       releaseCameraStream();
       return null;
     } finally {
@@ -231,6 +264,48 @@ function releaseCameraStream(): void {
     cameraVideo.parentNode.removeChild(cameraVideo);
   }
   cameraVideo = null;
+}
+
+// Live preview target: PresenceVerificationCard.tsx owns and renders the
+// actual <canvas> element (inside its own React tree, sized by its own
+// layout) and hands it here via attachPresencePreview() - this module just
+// draws into whatever canvas is currently attached, and draws into nothing
+// (a no-op) when the card isn't mounted (e.g. the employee is on a
+// different page, or camera monitoring isn't enabled). Kept as a plain
+// module-level reference rather than React state since this module has no
+// React dependency of its own and only one preview is ever shown at a time.
+let previewCanvas: HTMLCanvasElement | null = null;
+
+export function attachPresencePreview(canvas: HTMLCanvasElement | null): void {
+  previewCanvas = canvas;
+}
+
+function drawPresencePreview(
+  frame: HTMLCanvasElement,
+  detection: faceapi.FaceDetection | undefined,
+  lowConfidenceCandidates: faceapi.FaceDetection[],
+): void {
+  if (!previewCanvas) return;
+  const ctx = previewCanvas.getContext('2d');
+  if (!ctx) return;
+  // The card sizes the canvas element via CSS; keep the backing buffer in
+  // sync with the frame's own resolution so drawImage below isn't stretched.
+  if (previewCanvas.width !== frame.width || previewCanvas.height !== frame.height) {
+    previewCanvas.width = frame.width;
+    previewCanvas.height = frame.height;
+  }
+  ctx.drawImage(frame, 0, 0);
+  // A confirmed detection gets a clear green box; a low-confidence
+  // candidate (below the real threshold, only computed as a fallback when
+  // nothing was confirmed) gets a fainter amber one - visual feedback for
+  // the employee to adjust position/lighting rather than raw debug numbers.
+  const boxes = detection ? [detection] : lowConfidenceCandidates;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = detection ? '#22c55e' : '#f59e0b';
+  boxes.forEach((d) => {
+    const { x, y, width, height } = d.box;
+    ctx.strokeRect(x, y, width, height);
+  });
 }
 
 /**
@@ -266,7 +341,38 @@ async function checkFaceDetected(): Promise<boolean> {
         `meanBrightness=${brightness.toFixed(1)} (0=black, 255=white) elapsedMs=${(performance.now() - t0).toFixed(0)}`,
     );
 
-    const detection = await faceapi.detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions());
+    // DIAGNOSTIC (temporary): meanBrightness above reads the canvas's own
+    // 2D-context pixels directly - proven fine. This instead reads the
+    // ACTUAL tensor TensorFlow.js produces from that same canvas
+    // (tf.browser.fromPixels, the exact call face-api.js makes internally
+    // before running the network) - a channel-order/normalization bug in
+    // that conversion would feed the model garbage while the canvas still
+    // paints correctly on screen, since those are two independent code
+    // paths reading the same pixels differently. Comparing this against
+    // meanBrightness is the one thing never directly measured before - only
+    // the tfjs-core source was read and judged correct, never this
+    // environment's actual runtime output.
+    try {
+      const pixelTensor = faceapi.tf.browser.fromPixels(canvas);
+      const [tMean, tMin, tMax] = await Promise.all([
+        pixelTensor.mean().data(),
+        pixelTensor.min().data(),
+        pixelTensor.max().data(),
+      ]);
+      console.log(
+        `[PresenceDetector][diag] fromPixels tensor: shape=${JSON.stringify(pixelTensor.shape)} ` +
+          `dtype=${pixelTensor.dtype} mean=${tMean[0].toFixed(1)} min=${tMin[0]} max=${tMax[0]} ` +
+          `(expect roughly matching meanBrightness=${brightness.toFixed(1)} if fromPixels reads this canvas correctly)`,
+      );
+      pixelTensor.dispose();
+    } catch (tensorErr) {
+      console.log(`[PresenceDetector][diag] fromPixels failed: ${tensorErr}`);
+    }
+
+    const detection = await faceapi.detectSingleFace(
+      canvas,
+      new faceapi.TinyFaceDetectorOptions({ inputSize: FACE_DETECTOR_INPUT_SIZE }),
+    );
     console.log(
       `[PresenceDetector][diag] detection=${detection ? `FOUND score=${detection.score.toFixed(3)} box=${JSON.stringify(detection.box)}` : 'none'}`,
     );
@@ -278,18 +384,21 @@ async function checkFaceDetected(): Promise<boolean> {
     // we can tune around) versus genuinely nothing at all (a real pipeline
     // bug still to find). Only worth the extra inference cost while this is
     // still unexplained.
+    let lowThresholdCandidates: faceapi.FaceDetection[] = [];
     if (!detection) {
-      const lowThreshold = await faceapi.detectAllFaces(
+      lowThresholdCandidates = await faceapi.detectAllFaces(
         canvas,
-        new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.05 }),
+        new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.05, inputSize: FACE_DETECTOR_INPUT_SIZE }),
       );
       console.log(
-        `[PresenceDetector][diag] lowThreshold candidates=${lowThreshold.length}` +
-          (lowThreshold.length > 0
-            ? ` bestScore=${Math.max(...lowThreshold.map((d) => d.score)).toFixed(3)}`
+        `[PresenceDetector][diag] lowThreshold candidates=${lowThresholdCandidates.length}` +
+          (lowThresholdCandidates.length > 0
+            ? ` bestScore=${Math.max(...lowThresholdCandidates.map((d) => d.score)).toFixed(3)}`
             : ''),
       );
     }
+
+    drawPresencePreview(canvas, detection, lowThresholdCandidates);
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     return !!detection;

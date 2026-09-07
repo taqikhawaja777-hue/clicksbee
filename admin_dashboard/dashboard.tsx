@@ -117,14 +117,19 @@ export const AdminDashboard: React.FC = () => {
   // (or looks up) this user's productivity-service employee record, then
   // starts the Electron main-process tracker over IPC. Registration is
   // idempotent server-side, so this is safe to fire on every launch.
+  // Gated to role === 'EMPLOYEE' - an admin/manager who logs into their own
+  // desktop app (e.g. to test it) must never get tracked as if they were an
+  // employee being monitored, which is exactly what was happening before
+  // this check existed: their account would get auto-registered and start
+  // showing up permanently in "Today, per employee" alongside real staff.
   const idleTrackingStartedRef = useRef(false);
   useEffect(() => {
-    if (!isAuthenticated || !user.email || idleTrackingStartedRef.current) return;
+    if (!isAuthenticated || !user.email || user.role !== 'EMPLOYEE' || idleTrackingStartedRef.current) return;
     idleTrackingStartedRef.current = true;
 
     (async () => {
       try {
-        const employee = await productivityApiService.registerEmployee(user.name || 'Employee', user.email);
+        const employee = await productivityApiService.registerEmployee(user.name || 'Employee', user.email, undefined, user.role);
         setProductivityEmployeeId(employee.id);
         setContextProductivityEmployeeId(employee.id);
         const electron = (window as any).require?.('electron');
@@ -137,7 +142,7 @@ export const AdminDashboard: React.FC = () => {
         idleTrackingStartedRef.current = false;
       }
     })();
-  }, [isAuthenticated, user.email, user.name]);
+  }, [isAuthenticated, user.email, user.name, user.role]);
 
   // Poll (rather than check once) whether an admin has turned camera
   // monitoring on for this employee, since that can happen at any time
@@ -393,7 +398,9 @@ export const AdminDashboard: React.FC = () => {
             <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>
               {user.role === 'MANAGER' ? 'Manager Supervisor Portal' : activeNav}
             </h2>
-            <p className="text-xs text-slate-400 font-medium mt-0.5">Monday, August 10, 2026</p>
+            <p className="text-xs text-slate-400 font-medium mt-0.5">
+              {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+            </p>
           </div>
 
           <div className="flex items-center space-x-4">

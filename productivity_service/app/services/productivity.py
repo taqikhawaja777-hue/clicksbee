@@ -33,7 +33,7 @@ IDLE_STATUS_AWAY_THRESHOLD_SECONDS = 240
 # presenceDetector.ts) - presence_logs stores one row per check with no
 # duration field, so seconds-per-status are approximated as row_count *
 # this constant rather than computed from explicit start/end timestamps.
-PRESENCE_POLL_INTERVAL_SECONDS = 20
+PRESENCE_POLL_INTERVAL_SECONDS = 15
 
 # After a break ends (scheduled or manual), the employee's displayed status
 # is pinned to ACTIVE for this long regardless of actual input, so idle
@@ -136,23 +136,41 @@ class ProductivityService:
         rows = resp.data or []
         return rows[0] if rows else None
 
-    def create_employee(self, full_name: str, email: str, jibble_member_id: str | None = None) -> dict:
-        resp = self.client.table("employees").insert(
-            {"full_name": full_name, "email": email, "jibble_member_id": jibble_member_id}
-        ).execute()
+    def create_employee(
+        self, full_name: str, email: str, jibble_member_id: str | None = None, role: str = "EMPLOYEE"
+    ) -> dict:
+        row = {"full_name": full_name, "email": email, "jibble_member_id": jibble_member_id, "role": role}
+        try:
+            resp = self.client.table("employees").insert(row).execute()
+        except Exception as exc:
+            # Falls back to writing without `role` if migration
+            # 007_employees_role.sql hasn't been applied yet - registration
+            # is a critical path (runs on every desktop app launch) that
+            # shouldn't go down because of an optional, filtering-only
+            # column. Once the migration lands, this branch stops firing.
+            if "role" not in str(exc):
+                raise
+            logger.warning(
+                "employees insert failed on 'role' column (migration "
+                "007_employees_role.sql not applied yet?) - retrying without it: %s", exc,
+            )
+            row.pop("role", None)
+            resp = self.client.table("employees").insert(row).execute()
         return resp.data[0]
 
     def get_or_create_employee(
-        self, full_name: str, email: str, jibble_member_id: str | None = None
+        self, full_name: str, email: str, jibble_member_id: str | None = None, role: str = "EMPLOYEE"
     ) -> dict:
         """Idempotent registration keyed on email. `email` is unique on the
         table, so registering the same person twice (e.g. the desktop app
         bootstrapping its idle-time tracker on every launch) returns the
-        existing row instead of failing on the unique constraint."""
+        existing row instead of failing on the unique constraint. `role` is
+        only applied on first creation - an already-registered person's
+        role is never silently overwritten by a later login."""
         existing = self.get_employee_by_email(email)
         if existing:
             return existing
-        return self.create_employee(full_name, email, jibble_member_id)
+        return self.create_employee(full_name, email, jibble_member_id, role)
 
     # ---- tasks -----------------------------------------------------------
 
@@ -591,6 +609,12 @@ class ProductivityService:
 
         result = []
         for employee in self.list_employees():
+            if employee.get("role", "EMPLOYEE") != "EMPLOYEE":
+                # Admin/manager accounts that logged into the desktop app
+                # themselves (e.g. to test it) get auto-registered the same
+                # as any real employee - this table is employee-tracking
+                # only, so exclude anyone whose role says otherwise.
+                continue
             employee_id = employee["id"]
             summary = self.get_shift_summary(UUID(employee_id), day)
             if summary["status"] == "NOT_CHECKED_IN" and employee_id not in has_idle_data:
@@ -1213,6 +1237,11 @@ class ProductivityService:
             [self.get_employee(employee_id)] if employee_id else self.list_employees()
         )
         employees = [e for e in employees if e]
+        if employee_id is None:
+            # Same admin/manager exclusion as get_idle_time_summary() -
+            # doesn't apply when a specific employee_id was explicitly
+            # requested, since that's a deliberate choice by the caller.
+            employees = [e for e in employees if e.get("role", "EMPLOYEE") == "EMPLOYEE"]
         days = self._karachi_date_range(start_date, end_date)
 
         rows = []

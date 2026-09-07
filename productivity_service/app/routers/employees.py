@@ -19,7 +19,7 @@ def register_employee(
     launch. Optionally takes a jibble_member_id up front; if omitted, an
     admin can set it later directly on the row to enable Jibble sync for
     that employee."""
-    employee = service.get_or_create_employee(payload.full_name, payload.email, payload.jibble_member_id)
+    employee = service.get_or_create_employee(payload.full_name, payload.email, payload.jibble_member_id, payload.role)
     return EmployeeOut(**employee)
 
 

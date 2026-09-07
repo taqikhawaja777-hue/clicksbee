@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Camera, MousePointerClick, CheckCircle2, MoonStar, ChevronDown } from 'lucide-react';
 import { productivityApiService, Employee } from './src/services/productivityApi.service';
 import { useEmployee } from './EmployeeContext';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
+import { attachPresencePreview } from './src/services/presenceDetector';
 
 function formatDuration(seconds: number): string {
   const mins = Math.round(seconds / 60);
@@ -29,6 +30,40 @@ const StatCard: React.FC<StatCardProps> = ({ label, seconds, icon: Icon, accent 
     <h3 className="text-3xl font-black text-slate-900 dark:text-white mt-4">{formatDuration(seconds)}</h3>
   </div>
 );
+
+/**
+ * Replaces the "Camera-Confirmed Active" StatCard's number with a live
+ * preview of what the face detector currently sees, ONLY when this is the
+ * logged-in employee's own card - the video feed comes from THIS device's
+ * own camera, so it has no meaning for any other employee selected in the
+ * dropdown above (there is still no video transmission between devices;
+ * that invariant is untouched). Viewing someone else's data still shows
+ * the plain duration number, same as before.
+ */
+const CameraPreviewCard: React.FC<{ seconds: number }> = ({ seconds }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    attachPresencePreview(canvasRef.current);
+    return () => attachPresencePreview(null);
+  }, []);
+
+  return (
+    <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-400">Camera-Confirmed Active</span>
+        <div className="p-2.5 rounded-2xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600">
+          <Camera className="w-5 h-5" />
+        </div>
+      </div>
+      <div className="mt-4 rounded-xl overflow-hidden bg-slate-900 aspect-video">
+        <canvas ref={canvasRef} className="w-full h-full object-cover" />
+      </div>
+      <p className="mt-2 text-[10px] text-slate-400 font-medium">Live - visible only to you, never recorded</p>
+      <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">{formatDuration(seconds)} confirmed today</p>
+    </div>
+  );
+};
 
 /**
  * "Presence Verification" — for one employee: camera-confirmed active time
@@ -79,9 +114,10 @@ export const PresenceVerificationCard: React.FC = () => {
           </div>
           <h2 className="text-lg font-extrabold text-slate-800 dark:text-white">Camera + Input Cross-Check</h2>
           <p className="text-xs text-slate-400 font-medium mt-0.5">
-            Boolean-only camera presence, combined with mouse/keyboard input — no images stored or shown, here or anywhere.
-            Input-Confirmed Active and Idle/Away below are the same figures as the "Today, per employee" table above;
-            Camera-Confirmed and Combined Active are specific to camera-check samples.
+            Camera presence combined with mouse/keyboard input. Your own camera feed is shown live to you only, so you can
+            confirm you're in frame — it is never recorded, uploaded, or visible to anyone else. Input-Confirmed Active and
+            Idle/Away below are the same figures as the "Today, per employee" table above; Camera-Confirmed and Combined
+            Active are specific to camera-check samples.
           </p>
         </div>
 
@@ -127,12 +163,16 @@ export const PresenceVerificationCard: React.FC = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <StatCard
-            label="Camera-Confirmed Active"
-            seconds={summary.cameraActiveSeconds}
-            icon={Camera}
-            accent="bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600"
-          />
+          {selectedEmployee?.email.toLowerCase() === user.email.toLowerCase() ? (
+            <CameraPreviewCard seconds={summary.cameraActiveSeconds} />
+          ) : (
+            <StatCard
+              label="Camera-Confirmed Active"
+              seconds={summary.cameraActiveSeconds}
+              icon={Camera}
+              accent="bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600"
+            />
+          )}
           <StatCard
             label="Input-Confirmed Active"
             seconds={summary.activeSeconds}

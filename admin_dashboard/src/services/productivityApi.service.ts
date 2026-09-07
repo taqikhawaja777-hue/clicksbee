@@ -68,6 +68,7 @@ export interface Employee {
   email: string;
   jibbleMemberId: string | null;
   cameraMonitoringEnabled: boolean;
+  role: string;
 }
 
 export interface IdleTimeLog {
@@ -249,11 +250,12 @@ class ProductivityApiService {
     });
   }
 
-  registerEmployee(fullName: string, email: string, jibbleMemberId?: string) {
+  registerEmployee(fullName: string, email: string, jibbleMemberId?: string, role: string = 'EMPLOYEE') {
     return this.request<Employee>('POST', '/api/employees/register', {
       fullName,
       email,
       jibbleMemberId,
+      role,
     });
   }
 

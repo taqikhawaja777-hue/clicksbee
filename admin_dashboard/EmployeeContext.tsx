@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { apiService } from './src/services/api.service';
 import { productivityApiService } from './src/services/productivityApi.service';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
@@ -317,6 +317,18 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   });
 
   const [productivityEmployeeId, setProductivityEmployeeId] = useState<string | null>(null);
+  // Guards handleCheckIn/handleCheckOut against firing twice concurrently -
+  // found via real shift_events data showing back-to-back duplicate
+  // check_in/check_out rows (identical or near-identical timestamps, up to
+  // 4 check-outs in a row with no check-in between) with no click-side
+  // debounce to prevent it. A rapid double-click (or a slow network call
+  // the user clicks through again before it resolves) could otherwise
+  // corrupt the true check-in/check-out sequence the server relies on to
+  // know whether someone is actually checked in - which is exactly what
+  // then shows up as a mismatch between this employee's own optimistic
+  // "Active" sidebar state and the real, event-log-derived status ("Away"/
+  // "Checked Out") on the "Today, per employee" table.
+  const shiftActionInFlightRef = useRef(false);
   // THE single source of truth for active/idle/break/shift-duration/status -
   // see productivityApi.service.ts's ShiftSummary and the backend's
   // ProductivityService.get_shift_summary(). Every other component showing
@@ -488,10 +500,21 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // the bootstrap effect also calls it moments later.
   const ensureProductivityEmployeeId = async (): Promise<string | null> => {
     if (productivityEmployeeId) return productivityEmployeeId;
+    // An admin/manager account clicking Check In (e.g. while poking around
+    // the Employee Portal view to test it) must never get registered as a
+    // tracked employee - same reasoning as dashboard.tsx's bootstrap-effect
+    // gate, applied here too since this is the OTHER path that can create
+    // a productivity_service employee row (and, from there, real
+    // shift_events - this is exactly how an admin account ended up
+    // permanently showing up on "Today, per employee" before this check
+    // existed).
+    if (state.user.role !== 'EMPLOYEE') return null;
     try {
       const employee = await productivityApiService.registerEmployee(
         state.user.name || 'Employee',
         state.user.email,
+        undefined,
+        state.user.role,
       );
       setProductivityEmployeeId(employee.id);
       return employee.id;
@@ -502,6 +525,16 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const handleCheckIn = async () => {
+    if (shiftActionInFlightRef.current) return;
+    shiftActionInFlightRef.current = true;
+    try {
+      await handleCheckInImpl();
+    } finally {
+      shiftActionInFlightRef.current = false;
+    }
+  };
+
+  const handleCheckInImpl = async () => {
     const startTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const realImg = await captureRealLiveDesktopScreen(
       state.user.name || 'umer Sohail',
@@ -602,6 +635,16 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Check Out
   const handleCheckOut = async () => {
+    if (shiftActionInFlightRef.current) return;
+    shiftActionInFlightRef.current = true;
+    try {
+      await handleCheckOutImpl();
+    } finally {
+      shiftActionInFlightRef.current = false;
+    }
+  };
+
+  const handleCheckOutImpl = async () => {
     setState((prev: typeof state) => {
       const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const todayDate = new Date().toISOString().split('T')[0];
@@ -694,6 +737,16 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Toggle Break
   const handleToggleBreak = async () => {
+    if (shiftActionInFlightRef.current) return;
+    shiftActionInFlightRef.current = true;
+    try {
+      await handleToggleBreakImpl();
+    } finally {
+      shiftActionInFlightRef.current = false;
+    }
+  };
+
+  const handleToggleBreakImpl = async () => {
     const startingBreak = state.session.status !== 'On Break';
 
     // Optimistic local flip for instant button feedback - the next

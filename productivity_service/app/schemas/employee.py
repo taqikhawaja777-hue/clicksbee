@@ -7,6 +7,7 @@ class EmployeeCreate(CamelModel):
     full_name: str
     email: str
     jibble_member_id: str | None = None
+    role: str = "EMPLOYEE"
 
 
 class EmployeeOut(CamelModel):
@@ -15,6 +16,7 @@ class EmployeeOut(CamelModel):
     email: str
     jibble_member_id: str | None = None
     camera_monitoring_enabled: bool = False
+    role: str = "EMPLOYEE"
 
 
 class ActiveEmployeeOut(CamelModel):
