@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
+import { productivityApiService } from './src/services/productivityApi.service';
 
 interface MetricCardProps {
   label: string;
   value: number | string;
   valueColorClass: string;
 }
+
+const POLL_INTERVAL_MS = 30000;
 
 export const EmployeeStatusOverviewCards: React.FC = () => {
   const [total, setTotal] = useState<number>(0);
@@ -13,25 +16,61 @@ export const EmployeeStatusOverviewCards: React.FC = () => {
   const [inactive, setInactive] = useState<number>(0);
 
   useEffect(() => {
-    fetch('http://localhost:3000/api/v1/employees')
-      .then((res) => res.json())
-      .then((json) => {
+    const fetchCounts = async () => {
+      try {
+        const res = await fetch('http://localhost:3000/api/v1/employees/all');
+        const json = await res.json();
         let list: any[] = [];
         if (Array.isArray(json)) list = json;
         else if (json?.data?.data && Array.isArray(json.data.data)) list = json.data.data;
         else if (json?.data && Array.isArray(json.data)) list = json.data;
 
-        const tot = typeof json?.totalCount === 'number' ? json.totalCount : (typeof json?.data?.totalCount === 'number' ? json.data.totalCount : list.length);
-        const act = list.filter((e: any) => e.status === 'ACTIVE' || e.status === 'Online').length;
-        const brk = list.filter((e: any) => e.status === 'On Break' || e.status === 'Break').length;
-        const inact = Math.max(0, tot - act - brk);
+        const tot = list.length;
+
+        // MongoDB's own `status` field only ever comes back as 'ACTIVE' or
+        // 'INACTIVE' in practice - the previous version's break-detection
+        // checked for 'On Break'/'Break', which never matches the real
+        // 'BREAK' value, so On Break was permanently stuck at 0 regardless
+        // of anyone's actual state. Cross-referencing productivity_service
+        // (the same live, real-time source already used by the Employee
+        // Directory table and Dashboard) fixes that and keeps this card
+        // consistent with the rest of the app rather than introducing yet
+        // another separate status definition.
+        let onBreakCount = 0;
+        let activeCount = 0;
+        try {
+          const [employeesList, idleSummary] = await Promise.all([
+            productivityApiService.listEmployees(),
+            productivityApiService.getIdleTimeSummary(),
+          ]);
+          const idToEmail = new Map(employeesList.map((e) => [e.id, e.email.toLowerCase()] as const));
+          const liveByEmail = new Map(
+            idleSummary.employees
+              .map((e) => [idToEmail.get(e.employeeId), e] as const)
+              .filter((pair): pair is [string, (typeof idleSummary.employees)[number]] => !!pair[0]),
+          );
+
+          for (const emp of list) {
+            const live = liveByEmail.get((emp.email || '').toLowerCase());
+            if (live?.status === 'ON_BREAK') onBreakCount += 1;
+            else if (live && live.status !== 'NOT_CHECKED_IN' && live.status !== 'CHECKED_OUT') activeCount += 1;
+          }
+        } catch (e) {
+          console.warn('EmployeeStatusOverviewCards productivity_service fetch error:', e);
+        }
 
         setTotal(tot);
-        setActive(act);
-        setOnBreak(brk);
-        setInactive(inact);
-      })
-      .catch((err) => console.warn('EmployeeStatusOverviewCards fetch error:', err));
+        setActive(activeCount);
+        setOnBreak(onBreakCount);
+        setInactive(Math.max(0, tot - activeCount - onBreakCount));
+      } catch (err) {
+        console.warn('EmployeeStatusOverviewCards fetch error:', err);
+      }
+    };
+
+    fetchCounts();
+    const interval = setInterval(fetchCounts, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
   }, []);
 
   const metrics: MetricCardProps[] = [

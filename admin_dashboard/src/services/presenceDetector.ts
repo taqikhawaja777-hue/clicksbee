@@ -155,19 +155,6 @@ function logModelParamStats(params: unknown, path = ''): void {
   }
 }
 
-/** Mean pixel brightness (0-255) of an ImageData - cheap blank-frame detector. */
-function meanBrightness(data: ImageData): number {
-  let sum = 0;
-  let samples = 0;
-  // Every 40th pixel (10 channels-worth) is plenty to tell "black" from
-  // "real image" without summing every byte of a full frame each tick.
-  for (let i = 0; i < data.data.length; i += 40) {
-    sum += data.data[i];
-    samples++;
-  }
-  return samples > 0 ? sum / samples : 0;
-}
-
 // Persistent camera stream/video, reused across every check instead of
 // being reacquired every 20s - see the CAMERA LIFECYCLE note at the top of
 // this file for why. Module-level (not per PresenceDetectionService
@@ -314,7 +301,6 @@ function drawPresencePreview(
  * itself.
  */
 async function checkFaceDetected(): Promise<boolean> {
-  const t0 = performance.now();
   try {
     await ensureModelLoaded();
 
@@ -328,73 +314,24 @@ async function checkFaceDetected(): Promise<boolean> {
     if (!ctx) return false;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // DIAGNOSTIC (temporary - remove once face detection is confirmed
-    // working end to end): tells us whether the canvas actually has real
-    // camera pixels in it or is still capturing blank/black frames, which
-    // is a completely different bug from the detector failing to find a
-    // face in a genuinely good frame.
-    const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const brightness = meanBrightness(frameData);
-    console.log(
-      `[PresenceDetector][diag] readyState=${video.readyState} ` +
-        `videoSize=${video.videoWidth}x${video.videoHeight} canvasSize=${canvas.width}x${canvas.height} ` +
-        `meanBrightness=${brightness.toFixed(1)} (0=black, 255=white) elapsedMs=${(performance.now() - t0).toFixed(0)}`,
-    );
-
-    // DIAGNOSTIC (temporary): meanBrightness above reads the canvas's own
-    // 2D-context pixels directly - proven fine. This instead reads the
-    // ACTUAL tensor TensorFlow.js produces from that same canvas
-    // (tf.browser.fromPixels, the exact call face-api.js makes internally
-    // before running the network) - a channel-order/normalization bug in
-    // that conversion would feed the model garbage while the canvas still
-    // paints correctly on screen, since those are two independent code
-    // paths reading the same pixels differently. Comparing this against
-    // meanBrightness is the one thing never directly measured before - only
-    // the tfjs-core source was read and judged correct, never this
-    // environment's actual runtime output.
-    try {
-      const pixelTensor = faceapi.tf.browser.fromPixels(canvas);
-      const [tMean, tMin, tMax] = await Promise.all([
-        pixelTensor.mean().data(),
-        pixelTensor.min().data(),
-        pixelTensor.max().data(),
-      ]);
-      console.log(
-        `[PresenceDetector][diag] fromPixels tensor: shape=${JSON.stringify(pixelTensor.shape)} ` +
-          `dtype=${pixelTensor.dtype} mean=${tMean[0].toFixed(1)} min=${tMin[0]} max=${tMax[0]} ` +
-          `(expect roughly matching meanBrightness=${brightness.toFixed(1)} if fromPixels reads this canvas correctly)`,
-      );
-      pixelTensor.dispose();
-    } catch (tensorErr) {
-      console.log(`[PresenceDetector][diag] fromPixels failed: ${tensorErr}`);
-    }
-
     const detection = await faceapi.detectSingleFace(
       canvas,
       new faceapi.TinyFaceDetectorOptions({ inputSize: FACE_DETECTOR_INPUT_SIZE }),
     );
-    console.log(
-      `[PresenceDetector][diag] detection=${detection ? `FOUND score=${detection.score.toFixed(3)} box=${JSON.stringify(detection.box)}` : 'none'}`,
-    );
 
-    // DIAGNOSTIC (temporary): the default scoreThreshold (0.5) throws away
-    // anything below it with no way to see what was actually there. Running
-    // a second pass at a near-zero threshold tells us whether the model is
-    // seeing a face with low confidence (a lighting/angle/threshold problem
-    // we can tune around) versus genuinely nothing at all (a real pipeline
-    // bug still to find). Only worth the extra inference cost while this is
-    // still unexplained.
+    // The low-confidence fallback pass (a second full inference through the
+    // network) only exists to draw the amber "close but not confirmed" box
+    // in the live preview - skip it whenever the preview isn't actually
+    // attached/visible (the common case: the employee is working in some
+    // other app, not staring at their own Idle Time page), which cuts
+    // steady-state face-detection cost roughly in half without changing
+    // faceDetected/combinedStatus or anything the preview shows while it
+    // IS on screen.
     let lowThresholdCandidates: faceapi.FaceDetection[] = [];
-    if (!detection) {
+    if (!detection && previewCanvas) {
       lowThresholdCandidates = await faceapi.detectAllFaces(
         canvas,
         new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.05, inputSize: FACE_DETECTOR_INPUT_SIZE }),
-      );
-      console.log(
-        `[PresenceDetector][diag] lowThreshold candidates=${lowThresholdCandidates.length}` +
-          (lowThresholdCandidates.length > 0
-            ? ` bestScore=${Math.max(...lowThresholdCandidates.map((d) => d.score)).toFixed(3)}`
-            : ''),
       );
     }
 

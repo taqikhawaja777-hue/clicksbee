@@ -100,6 +100,7 @@ function safeSetEmployeeState(state: any): void {
 }
 
 export interface UserProfile {
+  id?: string; // real MongoDB User id - was captured in the login response and then discarded; needed to correctly attribute screenshots/vision analysis to whoever is actually logged in, instead of a hardcoded placeholder
   name: string;
   email: string;
   role: 'EMPLOYEE' | 'MANAGER' | 'ADMIN';
@@ -188,7 +189,7 @@ export interface EmployeeContextType {
   handleCheckOut: () => void;
   handleToggleBreak: () => void;
   handleCompleteTask: () => void;
-  registerNewEmployee: (firstName: string, lastName: string, email: string, role: 'EMPLOYEE' | 'MANAGER', password?: string) => Promise<void>;
+  registerNewEmployee: (firstName: string, lastName: string, email: string, role: 'EMPLOYEE' | 'MANAGER', password?: string, department?: string) => Promise<void>;
   loginEmployee: (email: string, password?: string, requestedRole?: 'EMPLOYEE' | 'MANAGER') => Promise<boolean>;
 }
 
@@ -803,11 +804,12 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Register New Employee or Manager
   const registerNewEmployee = async (
-    firstName: string, 
-    lastName: string, 
-    email: string, 
+    firstName: string,
+    lastName: string,
+    email: string,
     role: 'EMPLOYEE' | 'MANAGER' = 'EMPLOYEE',
-    password: string = 'Taqu7777'
+    password: string = 'Taqu7777',
+    department?: string
   ) => {
     const cleanFirstName = firstName.trim();
     const cleanLastName = lastName.trim();
@@ -823,6 +825,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           password,
           organizationName: 'StitchMonitor Corp',
           role: role === 'MANAGER' ? 'ADMIN' : 'EMPLOYEE',
+          departmentName: department,
         }),
       });
 
@@ -886,6 +889,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const fullName = `${u.firstName || ''} ${u.lastName || ''}`.trim() || cleanEmail.split('@')[0];
       const isManagerAccount = canAccessManagerDashboard;
       const fetchedUser: UserProfile = {
+        id: u.id,
         name: fullName,
         email: u.email,
         role: isManagerAccount ? 'MANAGER' : 'EMPLOYEE',

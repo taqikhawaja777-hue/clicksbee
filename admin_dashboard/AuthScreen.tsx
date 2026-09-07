@@ -1,6 +1,12 @@
 import React, { useState } from 'react';
-import { Monitor, User, Mail, Lock, LogIn, UserPlus, ArrowRight, CheckCircle2, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Monitor, User, Mail, Lock, LogIn, UserPlus, ArrowRight, CheckCircle2, ShieldCheck, AlertCircle, Building2 } from 'lucide-react';
 import { useEmployee } from './EmployeeContext';
+
+// Matches the fixed department list already used elsewhere in the app
+// (Employee Directory's filter and Add Employee modal) - there's no
+// separate department-management UI, so this stays a fixed list rather
+// than fetching one from the backend.
+const DEPARTMENT_OPTIONS = ['Engineering', 'Design', 'Marketing', 'Sales', 'HR'];
 
 interface AuthScreenProps {
   onLoginSuccess: () => void;
@@ -14,6 +20,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
   const [lastName, setLastName] = useState<string>('');
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [department, setDepartment] = useState<string>(DEPARTMENT_OPTIONS[0]);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [authErrorMsg, setAuthErrorMsg] = useState<string | null>(null);
   const [signupSuccessMsg, setSignupSuccessMsg] = useState<string | null>(null);
@@ -36,7 +43,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
           lastName.trim() || 'Khawaja',
           cleanEmail,
           roleMode,
-          password || 'Taqu77777'
+          password || 'Taqu77777',
+          department
         );
 
         setSignupSuccessMsg(`Account created as ${roleMode}! Saved in MongoDB. Please sign in below.`);
@@ -203,6 +211,24 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
                       className="w-full pl-10 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-800 dark:text-white focus:outline-none focus:border-indigo-500 transition-colors"
                     />
                   </div>
+                </div>
+              </div>
+            )}
+
+            {isSignUpMode && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">Department</label>
+                <div className="relative">
+                  <Building2 className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <select
+                    value={department}
+                    onChange={(e) => setDepartment(e.target.value)}
+                    className="w-full pl-10 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-800 dark:text-white focus:outline-none focus:border-indigo-500 transition-colors appearance-none cursor-pointer"
+                  >
+                    {DEPARTMENT_OPTIONS.map((dept) => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             )}

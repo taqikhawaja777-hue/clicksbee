@@ -38,8 +38,12 @@ export class GroqVisionService {
 
   /**
    * Analyze a screenshot using Groq Vision LLM and return structured JSON result.
+   * @param departmentContext the employee's real department (e.g. "Design",
+   *   "Sales") - included in the prompt so task-relevance is judged
+   *   against what's actually normal for that job, not a one-size-fits-all
+   *   "should be in an IDE" assumption.
    */
-  async analyzeScreenshot(imageBase64: string): Promise<VisionAnalysisResult> {
+  async analyzeScreenshot(imageBase64: string, departmentContext?: string): Promise<VisionAnalysisResult> {
     const defaultResult: VisionAnalysisResult = {
       summary: 'Employee is actively working on developer workstation tasks.',
       taskRelevance: 'Yes',
@@ -57,7 +61,10 @@ export class GroqVisionService {
     }
 
     try {
-      const promptText = `Analyze this employee desktop screenshot. Return JSON only:
+      const departmentLine = departmentContext
+        ? `This employee works in the ${departmentContext} department - judge taskRelevance against what's normal work for that department (e.g. design tools for Design, CRM/email for Sales), not a generic assumption.`
+        : '';
+      const promptText = `Analyze this employee desktop screenshot. ${departmentLine} Return JSON only:
 {
   "summary": "one sentence of what employee is doing",
   "taskRelevance": "Yes or No",

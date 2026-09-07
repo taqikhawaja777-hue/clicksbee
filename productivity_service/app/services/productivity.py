@@ -728,28 +728,15 @@ class ProductivityService:
         resp = self.client.table("presence_logs").insert(row).execute()
         return resp.data[0]
 
-    def get_presence_summary(self, employee_id: UUID, day: date) -> dict:
-        # Karachi-local day boundaries, not UTC: `day` is normally "today"
-        # per KARACHI_TZ (see the shift/idle-time routers' defaults), and
-        # presence_logs.occurred_at is a real timestamptz - Postgres
-        # compares it correctly against a +05:00-offset literal, no
-        # conversion needed on this end. Using UTC boundaries here while
-        # the rest of the app agrees on Karachi-day is exactly what caused
-        # a several-hour window around each local midnight where this
-        # returned zero rows despite presence checks actively landing.
-        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ).isoformat()
-        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ).isoformat()
-        resp = (
-            self.client.table("presence_logs")
-            .select("*")
-            .eq("employee_id", str(employee_id))
-            .gte("occurred_at", day_start)
-            .lte("occurred_at", day_end)
-            .order("occurred_at")
-            .execute()
-        )
-        rows = resp.data or []
-
+    @staticmethod
+    def _compute_presence_summary(rows: list[dict], employee_id: UUID, day: date) -> dict:
+        """Pure computation half of get_presence_summary() - takes an
+        already-fetched, already-day-filtered list of presence_logs rows
+        instead of querying, so get_report_rows() can fetch a whole date
+        range's rows ONCE per employee and slice them per day in memory
+        rather than re-querying per day (see get_report_rows() for why that
+        mattered: an 8-day range was taking ~14s from this exact N+1
+        pattern - 3 Supabase round-trips per employee per day)."""
         # Real elapsed-time accounting rather than a flat row_count * interval
         # estimate: attribute the time between two consecutive checks to
         # whatever status the earlier one reported, capped at 2x the normal
@@ -791,6 +778,28 @@ class ProductivityService:
             "combined_active_seconds": round(combined_active),
             "idle_away_seconds": round(idle_away),
         }
+
+    def get_presence_summary(self, employee_id: UUID, day: date) -> dict:
+        # Karachi-local day boundaries, not UTC: `day` is normally "today"
+        # per KARACHI_TZ (see the shift/idle-time routers' defaults), and
+        # presence_logs.occurred_at is a real timestamptz - Postgres
+        # compares it correctly against a +05:00-offset literal, no
+        # conversion needed on this end. Using UTC boundaries here while
+        # the rest of the app agrees on Karachi-day is exactly what caused
+        # a several-hour window around each local midnight where this
+        # returned zero rows despite presence checks actively landing.
+        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ).isoformat()
+        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ).isoformat()
+        resp = (
+            self.client.table("presence_logs")
+            .select("*")
+            .eq("employee_id", str(employee_id))
+            .gte("occurred_at", day_start)
+            .lte("occurred_at", day_end)
+            .order("occurred_at")
+            .execute()
+        )
+        return self._compute_presence_summary(resp.data or [], employee_id, day)
 
     # ---- shift/break event log & unified summary ---------------------------
     #
@@ -1129,27 +1138,18 @@ class ProductivityService:
             current += timedelta(days=1)
         return days
 
-    def get_daily_report_row(self, employee_id: UUID, day: date) -> dict:
-        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ)
-        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ)
-        try:
-            events = (
-                self.client.table("shift_events")
-                .select("*")
-                .eq("employee_id", str(employee_id))
-                .gte("occurred_at", day_start.isoformat())
-                .lte("occurred_at", day_end.isoformat())
-                .order("occurred_at")
-                .execute()
-            ).data or []
-        except Exception:
-            logger.exception(
-                "Failed to query shift_events for report row (employee %s, day %s) - "
-                "is migration 005_shift_events.sql applied? Treating as no events.",
-                employee_id, day,
-            )
-            events = []
-
+    @staticmethod
+    def _compute_daily_report_row(
+        events: list[dict], idle_row: dict | None, presence: dict, employee_id: UUID, day: date
+    ) -> dict:
+        """Pure computation half of get_daily_report_row() - takes
+        already-fetched, already-day-filtered shift_events/idle_time_logs/
+        presence data instead of querying. Exists for the same reason as
+        _compute_presence_summary(): get_report_rows() fetches a whole date
+        range's data ONCE per employee and slices it per day in memory,
+        instead of the 3-queries-per-employee-per-day pattern this method
+        used to run inline (an 8-day, 4-employee report was taking ~14s -
+        720 sequential Supabase round-trips for a 6-month range)."""
         check_ins = [e for e in events if e["event_type"] == "check_in"]
         check_outs = [e for e in events if e["event_type"] == "check_out"]
         first_check_in = _parse_iso(check_ins[0]["occurred_at"]) if check_ins else None
@@ -1193,14 +1193,6 @@ class ProductivityService:
 
         total_shift_seconds = max(0.0, total_worked_seconds - total_break_seconds)
 
-        idle_rows = (
-            self.client.table("idle_time_logs")
-            .select("*")
-            .eq("employee_id", str(employee_id))
-            .eq("date", day.isoformat())
-            .execute()
-        ).data or []
-        idle_row = idle_rows[0] if idle_rows else None
         active_seconds = (idle_row.get("active_seconds") or 0) if idle_row else 0
         idle_seconds = (idle_row.get("idle_seconds") or 0) if idle_row else 0
         app_focus = (idle_row.get("app_focus_seconds") or {}) if idle_row else {}
@@ -1208,8 +1200,6 @@ class ProductivityService:
         productivity_percentage = (
             round((active_seconds / total_logged) * 100, 2) if total_logged > 0 else 0.0
         )
-
-        presence = self.get_presence_summary(employee_id, day)
 
         return {
             "employee_id": str(employee_id),
@@ -1229,10 +1219,48 @@ class ProductivityService:
             "combined_active_seconds": presence["combined_active_seconds"],
         }
 
+    def get_daily_report_row(self, employee_id: UUID, day: date) -> dict:
+        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ)
+        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ)
+        try:
+            events = (
+                self.client.table("shift_events")
+                .select("*")
+                .eq("employee_id", str(employee_id))
+                .gte("occurred_at", day_start.isoformat())
+                .lte("occurred_at", day_end.isoformat())
+                .order("occurred_at")
+                .execute()
+            ).data or []
+        except Exception:
+            logger.exception(
+                "Failed to query shift_events for report row (employee %s, day %s) - "
+                "is migration 005_shift_events.sql applied? Treating as no events.",
+                employee_id, day,
+            )
+            events = []
+
+        idle_rows = (
+            self.client.table("idle_time_logs")
+            .select("*")
+            .eq("employee_id", str(employee_id))
+            .eq("date", day.isoformat())
+            .execute()
+        ).data or []
+        idle_row = idle_rows[0] if idle_rows else None
+
+        presence = self.get_presence_summary(employee_id, day)
+
+        return self._compute_daily_report_row(events, idle_row, presence, employee_id, day)
+
     def get_report_rows(self, start_date: date, end_date: date, employee_id: UUID | None = None) -> list[dict]:
-        """Flat list of get_daily_report_row() results, one per employee
-        per day in [start_date, end_date] - what the Attendance/Productivity
-        report endpoints hand to the frontend for PDF generation."""
+        """Flat list of one row per employee per day in [start_date,
+        end_date] - what the Attendance/Productivity report endpoints hand
+        to the frontend for PDF generation and dashboard charts. Fetches
+        shift_events/idle_time_logs/presence_logs ONCE per employee for the
+        WHOLE range (not once per day - see _compute_daily_report_row()'s
+        docstring for why that mattered) and slices each day's data out in
+        memory via _compute_daily_report_row()/_compute_presence_summary()."""
         employees = (
             [self.get_employee(employee_id)] if employee_id else self.list_employees()
         )
@@ -1243,11 +1271,69 @@ class ProductivityService:
             # requested, since that's a deliberate choice by the caller.
             employees = [e for e in employees if e.get("role", "EMPLOYEE") == "EMPLOYEE"]
         days = self._karachi_date_range(start_date, end_date)
+        range_start = datetime.combine(start_date, time.min, tzinfo=KARACHI_TZ)
+        range_end = datetime.combine(end_date, time.max, tzinfo=KARACHI_TZ)
 
         rows = []
         for employee in employees:
+            emp_id = UUID(employee["id"])
+
+            try:
+                all_events = (
+                    self.client.table("shift_events")
+                    .select("*")
+                    .eq("employee_id", str(emp_id))
+                    .gte("occurred_at", range_start.isoformat())
+                    .lte("occurred_at", range_end.isoformat())
+                    .order("occurred_at")
+                    .execute()
+                ).data or []
+            except Exception:
+                logger.exception(
+                    "Failed to query shift_events for report rows (employee %s, %s..%s) - "
+                    "is migration 005_shift_events.sql applied? Treating as no events.",
+                    emp_id, start_date, end_date,
+                )
+                all_events = []
+
+            all_idle_rows = (
+                self.client.table("idle_time_logs")
+                .select("*")
+                .eq("employee_id", str(emp_id))
+                .gte("date", start_date.isoformat())
+                .lte("date", end_date.isoformat())
+                .execute()
+            ).data or []
+            idle_row_by_date = {r["date"]: r for r in all_idle_rows}
+
+            all_presence_rows = (
+                self.client.table("presence_logs")
+                .select("*")
+                .eq("employee_id", str(emp_id))
+                .gte("occurred_at", range_start.isoformat())
+                .lte("occurred_at", range_end.isoformat())
+                .order("occurred_at")
+                .execute()
+            ).data or []
+
+            events_by_date: dict[str, list[dict]] = {}
+            for event in all_events:
+                key = _parse_iso(event["occurred_at"]).astimezone(KARACHI_TZ).date().isoformat()
+                events_by_date.setdefault(key, []).append(event)
+
+            presence_by_date: dict[str, list[dict]] = {}
+            for prow in all_presence_rows:
+                key = _parse_iso(prow["occurred_at"]).astimezone(KARACHI_TZ).date().isoformat()
+                presence_by_date.setdefault(key, []).append(prow)
+
             for day in days:
-                row = self.get_daily_report_row(UUID(employee["id"]), day)
+                day_key = day.isoformat()
+                day_events = events_by_date.get(day_key, [])
+                day_presence_rows = presence_by_date.get(day_key, [])
+                presence = self._compute_presence_summary(day_presence_rows, emp_id, day)
+                row = self._compute_daily_report_row(
+                    day_events, idle_row_by_date.get(day_key), presence, emp_id, day
+                )
                 row["employee_name"] = employee["full_name"]
                 rows.append(row)
         return rows

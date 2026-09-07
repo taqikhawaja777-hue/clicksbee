@@ -90,6 +90,21 @@ export class AuthService {
 
     const passwordHash = await this.hashPassword(dto.password);
 
+    // Departments are per-organization, plain-named rows (no separate
+    // management UI exists yet - the signup form just offers a fixed list
+    // of names) - find-or-create by (organizationId, name) rather than
+    // requiring the frontend to already know a real Department id.
+    let departmentId: string | undefined;
+    if (dto.departmentName?.trim()) {
+      const departmentName = dto.departmentName.trim();
+      const department = await this.prisma.department.upsert({
+        where: { organizationId_name: { organizationId: org.id, name: departmentName } },
+        update: {},
+        create: { organizationId: org.id, name: departmentName },
+      });
+      departmentId = department.id;
+    }
+
     const user = await this.prisma.user.create({
       data: {
         organizationId: org.id,
@@ -98,6 +113,7 @@ export class AuthService {
         email: dto.email.toLowerCase(),
         passwordHash,
         role: dto.role || Role.ADMIN,
+        departmentId,
         employeeCode: `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
       },
     });

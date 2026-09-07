@@ -200,6 +200,7 @@ model Department {
   users        User[]
   teams        Team[]
 
+  @@unique([organizationId, name])
   @@index([organizationId])
 }
 

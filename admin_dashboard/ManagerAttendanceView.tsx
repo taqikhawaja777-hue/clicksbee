@@ -1,18 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer 
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer
 } from 'recharts';
-import { 
+import {
   Download,
   ChevronDown,
   Check
 } from 'lucide-react';
+import { productivityApiService } from './src/services/productivityApi.service';
 
 export interface MonthlyAttendancePoint {
   month: string;
@@ -27,69 +28,117 @@ export interface AttendanceRecordRow {
   checkIn: string;
   checkOut: string;
   hours: string;
-  status: 'Present' | 'Late' | 'Absent' | 'Half Day' | 'Holiday';
+  status: 'Present' | 'On Break' | 'Absent';
   approved: boolean;
 }
 
-const monthlyData: MonthlyAttendancePoint[] = [
-  { month: 'Jan', rate: 94 },
-  { month: 'Feb', rate: 91 },
-  { month: 'Mar', rate: 96 },
-  { month: 'Apr', rate: 92 },
-  { month: 'May', rate: 95 },
-  { month: 'Jun', rate: 89 },
-];
+function todayDateKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
-const initialRecords: AttendanceRecordRow[] = [];
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+const REFRESH_INTERVAL_MS = 30000;
 
 export const ManagerAttendanceView: React.FC = () => {
   const [records, setRecords] = useState<AttendanceRecordRow[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [presentCount, setPresentCount] = useState<number>(0);
   const [absentCount, setAbsentCount] = useState<number>(0);
-  const [lateCount, setLateCount] = useState<number>(0);
-  const [attendanceRate, setAttendanceRate] = useState<number>(100);
+  const [onBreakCount, setOnBreakCount] = useState<number>(0);
+  const [attendanceRate, setAttendanceRate] = useState<number>(0);
+  const [monthlyData, setMonthlyData] = useState<MonthlyAttendancePoint[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:3000/api/v1/employees')
-      .then(res => res.json())
-      .then(json => {
-        let list: any[] = [];
-        if (Array.isArray(json)) list = json;
-        else if (json?.data?.data && Array.isArray(json.data.data)) list = json.data.data;
-        else if (json?.data && Array.isArray(json.data)) list = json.data;
+    const fetchData = async () => {
+      try {
+        const empRes = await fetch('http://localhost:3000/api/v1/employees/all');
+        const empJson = await empRes.json();
+        const employeesList: any[] = empJson?.data?.data || [];
+        const departmentByName = new Map(employeesList.map((e) => [e.name, e.department] as const));
 
-        if (list.length > 0) {
-          const todayStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-          const mapped: AttendanceRecordRow[] = list.map((emp: any, idx: number) => {
-            const isPresent = emp.status === 'ACTIVE' || emp.checkIn !== '--';
-            return {
-              id: emp.id || `rec-${idx}`,
-              employee: emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || 'Registered User',
-              department: typeof emp.department === 'string' ? emp.department : (emp.department?.name || 'Engineering'),
-              date: todayStr,
-              checkIn: emp.checkIn || '--',
-              checkOut: isPresent ? 'Shift Active' : '--',
-              hours: isPresent ? '00:34:15 (Live)' : '--',
-              status: isPresent ? 'Present' : 'Absent',
-              approved: isPresent,
-            };
-          });
+        const today = todayDateKey();
+        const [todayReport, idleSummary] = await Promise.all([
+          productivityApiService.getAttendanceReport(today, today),
+          productivityApiService.getIdleTimeSummary(),
+        ]);
+        const liveByName = new Map(idleSummary.employees.map((e) => [e.employeeName, e] as const));
 
-          setRecords(mapped);
-          const pres = mapped.filter(r => r.status === 'Present').length;
-          const abs = mapped.filter(r => r.status === 'Absent').length;
-          const lt = mapped.filter(r => r.status === 'Late').length;
+        const mapped: AttendanceRecordRow[] = todayReport.rows.map((row) => {
+          const live = liveByName.get(row.employeeName);
+          const onBreak = live?.status === 'ON_BREAK';
+          const status: AttendanceRecordRow['status'] =
+            row.attendanceStatus === 'ABSENT' ? 'Absent' : onBreak ? 'On Break' : 'Present';
+          return {
+            id: row.employeeId,
+            employee: row.employeeName,
+            department: departmentByName.get(row.employeeName) || 'Engineering',
+            date: today,
+            checkIn: row.checkInAt
+              ? new Date(row.checkInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : '--',
+            checkOut: row.stillCheckedIn
+              ? 'Shift Active'
+              : row.checkOutAt
+                ? new Date(row.checkOutAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : '--',
+            hours: row.shiftDurationSeconds > 0 ? formatDuration(row.shiftDurationSeconds) : '--',
+            status,
+            approved: row.attendanceStatus === 'PRESENT',
+          };
+        });
 
-          setPresentCount(pres);
-          setAbsentCount(abs);
-          setLateCount(lt);
-          setAttendanceRate(mapped.length > 0 ? Math.round((pres / mapped.length) * 100) : 100);
-        } else {
-          setRecords([]);
+        setRecords(mapped);
+        const pres = mapped.filter((r) => r.status === 'Present').length;
+        const abs = mapped.filter((r) => r.status === 'Absent').length;
+        const brk = mapped.filter((r) => r.status === 'On Break').length;
+        setPresentCount(pres);
+        setAbsentCount(abs);
+        setOnBreakCount(brk);
+        setAttendanceRate(mapped.length > 0 ? Math.round(((pres + brk) / mapped.length) * 100) : 0);
+
+        // Monthly Attendance Rate - last 6 calendar months of real
+        // attendance_status data. Fast enough for this range now that
+        // get_report_rows() fetches once per employee for the whole
+        // window instead of once per employee per day (was ~14s for an
+        // 8-day range, is ~2-3s for 6 months after that fix).
+        const now = new Date();
+        const rangeStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+        const rangeStartKey = `${rangeStart.getFullYear()}-${String(rangeStart.getMonth() + 1).padStart(2, '0')}-01`;
+        const monthlyReport = await productivityApiService.getAttendanceReport(rangeStartKey, today);
+        const byMonth = new Map<string, { present: number; total: number }>();
+        for (const row of monthlyReport.rows) {
+          const monthKey = row.date.slice(0, 7); // YYYY-MM
+          const bucket = byMonth.get(monthKey) || { present: 0, total: 0 };
+          bucket.total += 1;
+          if (row.attendanceStatus === 'PRESENT') bucket.present += 1;
+          byMonth.set(monthKey, bucket);
         }
-      })
-      .catch(e => console.warn('ManagerAttendanceView fetch error:', e));
+        const points: MonthlyAttendancePoint[] = [];
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          const bucket = byMonth.get(key);
+          points.push({
+            month: d.toLocaleDateString('en-US', { month: 'short' }),
+            rate: bucket && bucket.total > 0 ? Math.round((bucket.present / bucket.total) * 100) : 0,
+          });
+        }
+        setMonthlyData(points);
+      } catch (e) {
+        console.warn('ManagerAttendanceView fetch error:', e);
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
   }, []);
 
   const filteredRecords = records.filter(r => {
@@ -139,13 +188,16 @@ export const ManagerAttendanceView: React.FC = () => {
           </h2>
         </div>
 
-        {/* Late Card */}
+        {/* On Break Card - replaces the old "Late" card, which had no real
+            signal behind it (no shift-start-time is tracked to compare
+            against) and was permanently stuck at 0. On Break is real,
+            live data from the same source as everywhere else in the app. */}
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm flex flex-col justify-between min-h-[130px]">
           <p className="text-xs font-semibold text-slate-400">
-            Late
+            On Break
           </p>
           <h2 className="text-4xl font-extrabold text-[#f59e0b] tracking-tight mt-2">
-            {lateCount}
+            {onBreakCount}
           </h2>
         </div>
 
@@ -180,12 +232,14 @@ export const ManagerAttendanceView: React.FC = () => {
                 axisLine={false}
                 dy={10}
               />
-              <YAxis 
-                domain={[80, 100]} 
-                ticks={[80, 85, 90, 95, 100]} 
-                stroke="#94a3b8" 
-                fontSize={12} 
-                tickLine={false} 
+              <YAxis
+                // 0-100 (was a fixed 80-100 domain) - real months with no
+                // employees yet, or nobody checked in, legitimately show
+                // 0%, which the old range would have clipped off-chart.
+                domain={[0, 100]}
+                stroke="#94a3b8"
+                fontSize={12}
+                tickLine={false}
                 axisLine={false}
                 dx={-10}
               />
@@ -220,7 +274,7 @@ export const ManagerAttendanceView: React.FC = () => {
         {/* Table Header Controls */}
         <div className="p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <h2 className="text-xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-            Attendance Records — Jun 13, 2026
+            Attendance Records — {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
           </h2>
 
           <div className="flex items-center space-x-3">
@@ -233,10 +287,8 @@ export const ManagerAttendanceView: React.FC = () => {
               >
                 <option value="All">All</option>
                 <option value="Present">Present</option>
-                <option value="Late">Late</option>
+                <option value="On Break">On Break</option>
                 <option value="Absent">Absent</option>
-                <option value="Half Day">Half Day</option>
-                <option value="Holiday">Holiday</option>
               </select>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -305,24 +357,14 @@ export const ManagerAttendanceView: React.FC = () => {
                         Present
                       </span>
                     )}
-                    {row.status === 'Late' && (
+                    {row.status === 'On Break' && (
                       <span className="inline-block bg-amber-100/80 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 px-3 py-1 rounded-full text-[11px] font-bold">
-                        Late
+                        On Break
                       </span>
                     )}
                     {row.status === 'Absent' && (
                       <span className="inline-block bg-rose-100/80 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 px-3 py-1 rounded-full text-[11px] font-bold">
                         Absent
-                      </span>
-                    )}
-                    {row.status === 'Half Day' && (
-                      <span className="inline-block bg-cyan-100/80 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-300 px-3 py-1 rounded-full text-[11px] font-bold">
-                        Half Day
-                      </span>
-                    )}
-                    {row.status === 'Holiday' && (
-                      <span className="inline-block bg-purple-100/80 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 px-3 py-1 rounded-full text-[11px] font-bold">
-                        Holiday
                       </span>
                     )}
                   </td>

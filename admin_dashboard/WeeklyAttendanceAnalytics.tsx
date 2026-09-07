@@ -14,18 +14,27 @@ export interface AttendanceAnalyticsData {
   day: string;
   Present: number;
   Absent: number;
-  Late: number;
 }
 
-const defaultData: AttendanceAnalyticsData[] = [
-  { day: 'Mon', Present: 45, Absent: 5, Late: 10 },
-  { day: 'Tue', Present: 48, Absent: 3, Late: 9 },
-  { day: 'Wed', Present: 44, Absent: 6, Late: 10 },
-  { day: 'Thu', Present: 46, Absent: 4, Late: 10 },
-  { day: 'Fri', Present: 40, Absent: 8, Late: 12 },
-];
+// "Late" was dropped from this chart - the backend doesn't track a shift
+// start time to compare against, so there's no real signal behind it (the
+// mock data's Late numbers were invented). Present/Absent both come from
+// shift_events-derived attendanceStatus, which is real.
+export const WeeklyAttendanceAnalytics: React.FC<{ data?: AttendanceAnalyticsData[] }> = ({ data }) => {
+  if (!data) {
+    return (
+      <div className="bg-[#0b1329] border border-slate-800/80 rounded-3xl p-6 shadow-2xl text-white font-sans">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-xl font-bold tracking-tight text-white">Weekly Attendance Analytics</h3>
+            <p className="text-xs text-slate-400 font-medium mt-0.5">Overall weekly team attendance distribution across days</p>
+          </div>
+        </div>
+        <p className="text-xs text-slate-400 text-center py-16">Loading attendance data…</p>
+      </div>
+    );
+  }
 
-export const WeeklyAttendanceAnalytics: React.FC<{ data?: AttendanceAnalyticsData[] }> = ({ data = defaultData }) => {
   return (
     <div className="bg-[#0b1329] border border-slate-800/80 rounded-3xl p-6 shadow-2xl text-white font-sans">
       
@@ -64,11 +73,14 @@ export const WeeklyAttendanceAnalytics: React.FC<{ data?: AttendanceAnalyticsDat
               axisLine={false}
               dy={10}
             />
-            <YAxis 
-              stroke="#64748b" 
+            <YAxis
+              stroke="#64748b"
               fontSize={13}
-              domain={[0, 60]} 
-              ticks={[0, 15, 30, 45, 60]} 
+              // Auto-scaled (was a fixed 0-60 domain sized for the old
+              // mock data's ~46-person team) - allowInt keeps ticks on
+              // whole numbers, appropriate for a real, much smaller
+              // headcount rather than always rendering flat bars.
+              allowDecimals={false}
               tickLine={false}
               axisLine={false}
               dx={-10}
@@ -93,7 +105,6 @@ export const WeeklyAttendanceAnalytics: React.FC<{ data?: AttendanceAnalyticsDat
             />
             <Bar dataKey="Present" fill="#10b981" radius={[6, 6, 0, 0]} name="Present" />
             <Bar dataKey="Absent" fill="#ef4444" radius={[6, 6, 0, 0]} name="Absent" />
-            <Bar dataKey="Late" fill="#f59e0b" radius={[6, 6, 0, 0]} name="Late" />
           </BarChart>
         </ResponsiveContainer>
       </div>

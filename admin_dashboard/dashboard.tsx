@@ -136,6 +136,15 @@ export const AdminDashboard: React.FC = () => {
         const ipcRenderer = electron?.ipcRenderer;
         if (ipcRenderer?.invoke) {
           await ipcRenderer.invoke('start-idle-time-tracking', { employeeId: employee.id });
+          // Separate id space from the productivity_service employee above
+          // (that one's a Supabase UUID) - this is the real MongoDB User id,
+          // which is what captureService.ts's screenshot/vision-analysis
+          // pipeline keys everything on. Without this, that pipeline had no
+          // way to know who was actually logged in and fell back to a
+          // hardcoded fake user that doesn't exist in the database.
+          if (user.id) {
+            await ipcRenderer.invoke('set-monitor-employee-context', user.id, user.name, user.role);
+          }
         }
       } catch (e) {
         console.warn('[IdleTimeTracker] Failed to bootstrap idle-time tracking:', e);
@@ -373,10 +382,12 @@ export const AdminDashboard: React.FC = () => {
 
         {/* Clean Sidebar Footer & Sign Out */}
         <div className={`p-3 border-t shrink-0 ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
-          <button 
+          <button
             onClick={() => {
               localStorage.removeItem('stitch_is_authenticated');
               apiService.clearToken();
+              const electron = (window as any).require?.('electron');
+              electron?.ipcRenderer?.invoke?.('clear-monitor-employee-context');
               setIsAuthenticated(false);
             }}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3 px-4'} py-3 text-rose-500 hover:bg-rose-500/10 rounded-xl font-medium text-sm transition-colors cursor-pointer`}

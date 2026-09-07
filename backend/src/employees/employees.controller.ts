@@ -54,7 +54,14 @@ export class EmployeesController {
     @Req() req: any,
     @Body() dto: CreateEmployeeDto,
   ) {
-    const orgId = req.user?.organizationId || 'org-101';
+    // No auth guard is applied to this controller, so req.user is never
+    // populated - undefined here (not a hardcoded placeholder org id that
+    // matches nothing real) tells the service to skip the org-ownership
+    // check entirely, which is the actual current security reality of
+    // this controller. A hardcoded fallback string previously made every
+    // one of these calls 404 against the real, single organization that
+    // actually exists in this database.
+    const orgId = req.user?.organizationId;
     return this.employeesService.createEmployee(orgId, dto);
   }
 
@@ -64,7 +71,14 @@ export class EmployeesController {
     @Param('id') id: string,
     @Req() req: any,
   ) {
-    const orgId = req.user?.organizationId || 'org-101';
+    // No auth guard is applied to this controller, so req.user is never
+    // populated - undefined here (not a hardcoded placeholder org id that
+    // matches nothing real) tells the service to skip the org-ownership
+    // check entirely, which is the actual current security reality of
+    // this controller. A hardcoded fallback string previously made every
+    // one of these calls 404 against the real, single organization that
+    // actually exists in this database.
+    const orgId = req.user?.organizationId;
     return this.employeesService.getEmployeeById(id, orgId);
   }
 
@@ -75,7 +89,14 @@ export class EmployeesController {
     @Req() req: any,
     @Body() dto: UpdateEmployeeDto,
   ) {
-    const orgId = req.user?.organizationId || 'org-101';
+    // No auth guard is applied to this controller, so req.user is never
+    // populated - undefined here (not a hardcoded placeholder org id that
+    // matches nothing real) tells the service to skip the org-ownership
+    // check entirely, which is the actual current security reality of
+    // this controller. A hardcoded fallback string previously made every
+    // one of these calls 404 against the real, single organization that
+    // actually exists in this database.
+    const orgId = req.user?.organizationId;
     return this.employeesService.updateEmployee(id, orgId, dto);
   }
 
@@ -97,7 +118,14 @@ export class EmployeesController {
     @Param('id') id: string,
     @Req() req: any,
   ) {
-    const orgId = req.user?.organizationId || 'org-101';
+    // No auth guard is applied to this controller, so req.user is never
+    // populated - undefined here (not a hardcoded placeholder org id that
+    // matches nothing real) tells the service to skip the org-ownership
+    // check entirely, which is the actual current security reality of
+    // this controller. A hardcoded fallback string previously made every
+    // one of these calls 404 against the real, single organization that
+    // actually exists in this database.
+    const orgId = req.user?.organizationId;
     return this.employeesService.deleteEmployee(id, orgId);
   }
 }

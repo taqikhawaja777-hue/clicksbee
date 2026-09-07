@@ -85,7 +85,11 @@ export class AiAnalyticsController {
       });
     }
 
-    // Fallback default task if none created yet
+    // No fabricated fallback task - a made-up "Implement AI Vision..."
+    // task with fake elapsed/estimated minutes was exactly the kind of
+    // fake data this whole feature was complained about for. null here
+    // means "genuinely no task assigned", which the frontend should show
+    // honestly rather than a canned example.
     const assignedTask = activeTask
       ? {
           id: activeTask.id,
@@ -97,23 +101,45 @@ export class AiAnalyticsController {
           actualTimeMinutes: activeTask.actualTimeMinutes || activeTask.actualMinutes || 45,
           startedAt: activeTask.startedAt || activeTask.createdAt,
         }
-      : {
-          id: 'task-default-1',
-          title: 'Implement AI Vision Screenshot Pipeline & Manager Dashboard',
-          description: 'Build real-time desktop screen analysis with LLM vision estimation.',
-          status: 'IN_PROGRESS',
-          priority: 'HIGH',
-          estimatedTimeMinutes: 120,
-          actualTimeMinutes: 45,
-          startedAt: new Date(Date.now() - 45 * 60 * 1000),
-        };
+      : null;
 
-    const estMins = assignedTask.estimatedTimeMinutes;
-    let elapsedMins = assignedTask.actualTimeMinutes;
-    if (assignedTask.startedAt) {
+    const estMins = assignedTask?.estimatedTimeMinutes ?? null;
+    let elapsedMins = assignedTask?.actualTimeMinutes ?? null;
+    if (assignedTask?.startedAt) {
       elapsedMins = Math.max(1, Math.round((Date.now() - new Date(assignedTask.startedAt).getTime()) / (1000 * 60)));
     }
-    const percentageTimeUsed = Math.min(200, Math.round((elapsedMins / estMins) * 100));
+    const percentageTimeUsed = estMins && elapsedMins ? Math.min(200, Math.round((elapsedMins / estMins) * 100)) : null;
+
+    // Resignation is a separate axis from moment-to-moment activity - a
+    // resigned employee isn't being captured/analyzed at all any more
+    // (see MonitorService.analyzeScreenshot's own check), so reflect that
+    // honestly here too rather than computing a productivity status for
+    // someone who's no longer being monitored.
+    if (!user.isActive) {
+      return {
+        userId: user.id,
+        employeeName: `${user.firstName} ${user.lastName}`.trim(),
+        employeeEmail: user.email,
+        department: user.department?.name || null,
+        isActive: false,
+        hasAnalysis: false,
+        assignedTask,
+        estimatedVsActualTime: { estimatedMinutes: estMins, actualMinutes: null, elapsedMinutes: elapsedMins, percentageTimeUsed },
+        aiConfidenceScore: null,
+        latestScreenSummary: {
+          aiSummary: 'This employee has resigned and is no longer being monitored.',
+          progressPercentage: null,
+          status: 'IDLE',
+          isTaskRelevant: false,
+          capturedAt: null,
+          imageUrl: null,
+        },
+        productivityStatus: 'IDLE',
+        consecutiveDistractionsCount: 0,
+        alertBadge: false,
+        recentEvaluations: [],
+      };
+    }
 
     // 2. Get user's screenshots evaluated by LLM
     const recentScreenshots = await this.prisma.screenshot.findMany({
@@ -123,6 +149,7 @@ export class AiAnalyticsController {
     });
 
     const latestShot = recentScreenshots[0];
+    const hasAnalysis = !!latestShot?.aiSummary;
 
     let consecutiveDistractions = 0;
     for (const shot of recentScreenshots) {
@@ -136,36 +163,50 @@ export class AiAnalyticsController {
 
     const alertBadge = consecutiveDistractions >= 3;
 
-    let productivityStatus: 'ON_TRACK' | 'BEHIND_SCHEDULE' | 'DISTRACTED' | 'IDLE' = 'ON_TRACK';
-    
-    if (latestShot?.isTaskRelevant === false || latestShot?.status === 'DISTRACTED') {
-      productivityStatus = 'DISTRACTED';
-    } else if (latestShot?.status === 'IDLE') {
-      productivityStatus = 'IDLE';
-    } else if (latestShot?.status === 'BEHIND_SCHEDULE' || (elapsedMins > estMins && latestShot?.isTaskRelevant === true)) {
-      productivityStatus = 'BEHIND_SCHEDULE';
-    } else {
-      productivityStatus = 'ON_TRACK';
+    // No real screenshot analysis yet -> IDLE (honestly "nothing observed
+    // yet"), not a silent ON_TRACK claim about someone who's never
+    // actually been evaluated.
+    let productivityStatus: 'ON_TRACK' | 'BEHIND_SCHEDULE' | 'DISTRACTED' | 'IDLE' = 'IDLE';
+
+    if (hasAnalysis) {
+      if (latestShot?.isTaskRelevant === false || latestShot?.status === 'DISTRACTED') {
+        productivityStatus = 'DISTRACTED';
+      } else if (latestShot?.status === 'IDLE') {
+        productivityStatus = 'IDLE';
+      } else if (latestShot?.status === 'BEHIND_SCHEDULE' || (estMins != null && elapsedMins != null && elapsedMins > estMins && latestShot?.isTaskRelevant === true)) {
+        productivityStatus = 'BEHIND_SCHEDULE';
+      } else {
+        productivityStatus = 'ON_TRACK';
+      }
     }
 
-    const latestProgress = latestShot?.progressPercentage ?? Math.min(95, percentageTimeUsed);
-    const latestSummary = latestShot?.aiSummary || `Employee is actively working on "${assignedTask.title}". Context matches assigned task.`;
+    const latestProgress = hasAnalysis ? (latestShot.progressPercentage ?? null) : null;
+    const latestSummary = hasAnalysis
+      ? latestShot.aiSummary
+      : 'No AI vision analysis available yet - waiting for the next screenshot to be evaluated.';
 
-    // Calculate dynamic AI Confidence Score
-    let confidenceScore = 94;
-    if (productivityStatus === 'BEHIND_SCHEDULE') confidenceScore = 78;
-    if (productivityStatus === 'DISTRACTED') confidenceScore = 65;
-    if (latestShot?.isTaskRelevant === true) confidenceScore += 4;
-    confidenceScore = Math.min(99, Math.max(50, confidenceScore));
+    // AI Confidence Score is only meaningful once a real analysis exists -
+    // no fabricated 94% for someone who's never been evaluated.
+    let confidenceScore: number | null = null;
+    if (hasAnalysis) {
+      confidenceScore = 94;
+      if (productivityStatus === 'BEHIND_SCHEDULE') confidenceScore = 78;
+      if (productivityStatus === 'DISTRACTED') confidenceScore = 65;
+      if (latestShot?.isTaskRelevant === true) confidenceScore += 4;
+      confidenceScore = Math.min(99, Math.max(50, confidenceScore));
+    }
 
     return {
       userId: user.id,
       employeeName: `${user.firstName} ${user.lastName}`.trim(),
       employeeEmail: user.email,
+      department: user.department?.name || null,
+      isActive: user.isActive,
+      hasAnalysis,
       assignedTask,
       estimatedVsActualTime: {
         estimatedMinutes: estMins,
-        actualMinutes: assignedTask.actualTimeMinutes,
+        actualMinutes: assignedTask?.actualTimeMinutes ?? null,
         elapsedMinutes: elapsedMins,
         percentageTimeUsed,
       },
@@ -174,8 +215,8 @@ export class AiAnalyticsController {
         aiSummary: latestSummary,
         progressPercentage: latestProgress,
         status: productivityStatus,
-        isTaskRelevant: latestShot?.isTaskRelevant ?? true,
-        capturedAt: latestShot?.capturedAt || new Date(),
+        isTaskRelevant: hasAnalysis ? (latestShot.isTaskRelevant ?? true) : null,
+        capturedAt: latestShot?.capturedAt || null,
         imageUrl: latestShot?.fileUrl || null,
       },
       productivityStatus,

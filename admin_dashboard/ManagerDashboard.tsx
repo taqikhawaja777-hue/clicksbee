@@ -10,32 +10,120 @@ import {
   UserCheck
 } from 'lucide-react';
 import { useEmployee } from './EmployeeContext';
-import { WeeklyAttendanceAnalytics } from './WeeklyAttendanceAnalytics';
+import { WeeklyAttendanceAnalytics, AttendanceAnalyticsData } from './WeeklyAttendanceAnalytics';
 import { EmployeeStatusOverviewCards } from './EmployeeStatusOverviewCards';
 import { EmployeeDirectoryTable } from './EmployeeDirectoryTable';
+import { productivityApiService } from './src/services/productivityApi.service';
 
 interface ManagerDashboardProps {
   activeNav?: string;
 }
 
+const OVERVIEW_POLL_INTERVAL_MS = 30000;
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] as const;
+
+function formatDateKey(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** Monday..Friday of the current week (local calendar), matching the
+ * chart's fixed 5-workday axis - Sun=0 in getDay(), so Monday is a 1-6 day
+ * offset back depending on where "today" falls, including from a Sunday. */
+function currentWorkWeekRange(): { monday: Date; friday: Date } {
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() + diffToMonday);
+  const friday = new Date(monday);
+  friday.setDate(monday.getDate() + 4);
+  return { monday, friday };
+}
+
+function formatHoursMinutes(totalSeconds: number): string {
+  const mins = Math.round(totalSeconds / 60);
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return `${hrs}h ${rem}m`;
+}
+
 export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ activeNav = 'Dashboard' }) => {
   const { user } = useEmployee();
-  const [totalCount, setTotalCount] = React.useState<number>(1);
-  const [activeCount, setActiveCount] = React.useState<number>(1);
+  const [totalCount, setTotalCount] = React.useState<number>(0);
+  const [activeCount, setActiveCount] = React.useState<number>(0);
+  const [avgProductivity, setAvgProductivity] = React.useState<number>(0);
+  const [totalLoggedSeconds, setTotalLoggedSeconds] = React.useState<number>(0);
+  const [activeSessionCount, setActiveSessionCount] = React.useState<number>(0);
+  const [weeklyAttendance, setWeeklyAttendance] = React.useState<AttendanceAnalyticsData[] | null>(null);
 
   React.useEffect(() => {
-    fetch('http://localhost:3000/api/v1/employees')
-      .then(res => res.json())
-      .then(data => {
-        if (data && typeof data.totalCount === 'number') {
-          setTotalCount(data.totalCount);
-          setActiveCount(data.activeCount || 0);
-        } else if (Array.isArray(data)) {
-          setTotalCount(data.length);
-          setActiveCount(data.filter((e: any) => e.status === 'ACTIVE' || e.status === 'Online').length);
-        }
-      })
-      .catch(e => console.warn('ManagerDashboard employees fetch error:', e));
+    const fetchEmployeeCounts = () => {
+      fetch('http://localhost:3000/api/v1/employees')
+        .then((res) => res.json())
+        // The real response is wrapped one level deeper than this used to
+        // check for - {success, data: {totalCount, activeCount, data: []}}
+        // - so totalCount/activeCount were silently stuck at their initial
+        // placeholder values forever, never actually reading the live
+        // counts underneath.
+        .then((payload) => {
+          const body = payload?.data ?? payload;
+          if (body && typeof body.totalCount === 'number') {
+            setTotalCount(body.totalCount);
+            setActiveCount(body.activeCount || 0);
+          } else if (Array.isArray(body)) {
+            setTotalCount(body.length);
+            setActiveCount(body.filter((e: any) => e.status === 'ACTIVE' || e.status === 'Online').length);
+          }
+        })
+        .catch((e) => console.warn('ManagerDashboard employees fetch error:', e));
+    };
+
+    const fetchProductivityOverview = () => {
+      productivityApiService
+        .getIdleTimeSummary()
+        .then((summary) => {
+          setAvgProductivity(summary.avgProductivityPercentage);
+          setTotalLoggedSeconds(summary.employees.reduce((sum, e) => sum + e.shiftDurationSeconds, 0));
+          setActiveSessionCount(summary.employees.filter((e) => e.isCheckedIn).length);
+        })
+        .catch((e) => console.warn('ManagerDashboard idle-time summary fetch error:', e));
+    };
+
+    const fetchWeeklyAttendance = () => {
+      const { monday, friday } = currentWorkWeekRange();
+      productivityApiService
+        .getAttendanceReport(formatDateKey(monday), formatDateKey(friday))
+        .then(({ rows }) => {
+          const byDate = new Map<string, { present: number; absent: number }>();
+          for (const row of rows) {
+            const bucket = byDate.get(row.date) || { present: 0, absent: 0 };
+            if (row.attendanceStatus === 'PRESENT') bucket.present += 1;
+            else bucket.absent += 1;
+            byDate.set(row.date, bucket);
+          }
+          const data: AttendanceAnalyticsData[] = WEEKDAY_LABELS.map((label, i) => {
+            const d = new Date(monday);
+            d.setDate(monday.getDate() + i);
+            const bucket = byDate.get(formatDateKey(d)) || { present: 0, absent: 0 };
+            return { day: label, Present: bucket.present, Absent: bucket.absent };
+          });
+          setWeeklyAttendance(data);
+        })
+        .catch((e) => console.warn('ManagerDashboard attendance report fetch error:', e));
+    };
+
+    fetchEmployeeCounts();
+    fetchProductivityOverview();
+    fetchWeeklyAttendance();
+    const interval = setInterval(() => {
+      fetchEmployeeCounts();
+      fetchProductivityOverview();
+      fetchWeeklyAttendance();
+    }, OVERVIEW_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
   }, []);
 
   // Render Employee View when activeNav === 'Employee'
@@ -149,8 +237,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ activeNav = 
             </div>
           </div>
           <div className="mt-4">
-            <h3 className="text-3xl font-black text-purple-600">93%</h3>
-            <p className="text-xs text-emerald-600 font-semibold mt-1">+5.2% vs last week</p>
+            <h3 className="text-3xl font-black text-purple-600">{Math.round(avgProductivity)}%</h3>
           </div>
         </div>
 
@@ -163,15 +250,15 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ activeNav = 
             </div>
           </div>
           <div className="mt-4">
-            <h3 className="text-3xl font-black text-slate-900 dark:text-white">368h 40m</h3>
-            <p className="text-xs text-slate-500 font-medium mt-1">Across 46 active sessions</p>
+            <h3 className="text-3xl font-black text-slate-900 dark:text-white">{formatHoursMinutes(totalLoggedSeconds)}</h3>
+            <p className="text-xs text-slate-500 font-medium mt-1">Across {activeSessionCount} active session{activeSessionCount === 1 ? '' : 's'}</p>
           </div>
         </div>
 
       </div>
 
       {/* 3. WEEKLY ATTENDANCE ANALYTICS CHART */}
-      <WeeklyAttendanceAnalytics />
+      <WeeklyAttendanceAnalytics data={weeklyAttendance ?? undefined} />
 
       {/* 4. NEW EMPLOYEE DIRECTORY TABLE (IN THE END) */}
       <EmployeeDirectoryTable />

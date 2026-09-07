@@ -25,7 +25,7 @@ export class EmployeesService {
     }
   }
 
-  async createEmployee(organizationId: string, dto: CreateEmployeeDto) {
+  async createEmployee(organizationId: string | undefined, dto: CreateEmployeeDto) {
     const existing = await this.prisma.user.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
@@ -34,11 +34,23 @@ export class EmployeesService {
       throw new ConflictException('Email is already registered');
     }
 
+    // Unlike getEmployeeById/update/delete (which can just skip an
+    // ownership check when unauthenticated), creating a user always needs
+    // a real organizationId - it's a required field. This controller has
+    // no auth guard, so req.user (and therefore organizationId) is never
+    // populated in practice; falling back to the app's one real
+    // organization instead of a hardcoded placeholder string that matches
+    // nothing keeps this working the same way registration already does.
+    const resolvedOrgId = organizationId || (await this.prisma.organization.findFirst())?.id;
+    if (!resolvedOrgId) {
+      throw new NotFoundException('No organization exists to assign this employee to');
+    }
+
     const passwordHash = await this.hashPassword(dto.password);
 
     const user = await this.prisma.user.create({
       data: {
-        organizationId,
+        organizationId: resolvedOrgId,
         firstName: dto.firstName,
         lastName: dto.lastName,
         email: dto.email.toLowerCase(),
@@ -127,7 +139,7 @@ export class EmployeesService {
     };
   }
 
-  async getEmployeeById(id: string, organizationId: string) {
+  async getEmployeeById(id: string, organizationId?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
       select: {
@@ -148,7 +160,11 @@ export class EmployeesService {
       },
     });
 
-    if (!user || user.organizationId !== organizationId) {
+    // organizationId is only provided when a real auth guard populated
+    // req.user - this controller has none today, so it's always undefined
+    // in practice. Skip the ownership check rather than compare against a
+    // value that was never real to begin with.
+    if (!user || (organizationId && user.organizationId !== organizationId)) {
       throw new NotFoundException('Employee not found');
     }
 
@@ -163,19 +179,39 @@ export class EmployeesService {
     };
   }
 
-  async updateEmployee(id: string, organizationId: string, dto: UpdateEmployeeDto) {
-    await this.getEmployeeById(id, organizationId);
+  async updateEmployee(id: string, organizationId: string | undefined, dto: UpdateEmployeeDto) {
+    // Use this employee's own real organizationId for the department
+    // lookup below, not the (usually undefined, since this controller has
+    // no auth guard) parameter - that parameter is only ever used for the
+    // ownership check inside getEmployeeById.
+    const existing = await this.getEmployeeById(id, organizationId);
+
+    const { departmentName, ...rest } = dto;
+    const data: typeof rest & { departmentId?: string } = { ...rest };
+
+    // Same find-or-create-by-name pattern as registration - lets the
+    // Employee Directory's edit modal send a plain department name rather
+    // than needing to know a real Department id (there's still no
+    // separate department-management UI/endpoint).
+    if (departmentName?.trim()) {
+      const department = await this.prisma.department.upsert({
+        where: { organizationId_name: { organizationId: existing.organizationId, name: departmentName.trim() } },
+        update: {},
+        create: { organizationId: existing.organizationId, name: departmentName.trim() },
+      });
+      data.departmentId = department.id;
+    }
 
     const updated = await this.prisma.user.update({
       where: { id },
-      data: dto,
+      data,
     });
 
     const { passwordHash: _, ...result } = updated;
     return result;
   }
 
-  async deleteEmployee(id: string, organizationId: string) {
+  async deleteEmployee(id: string, organizationId?: string) {
     await this.getEmployeeById(id, organizationId);
     await this.prisma.user.delete({ where: { id } });
     return { message: 'Employee deleted successfully' };
@@ -195,6 +231,7 @@ export class EmployeesService {
         role: true,
         employeeCode: true,
         avatar: true,
+        isActive: true,
         createdAt: true,
         department: { select: { id: true, name: true } },
         workSessions: {
@@ -253,6 +290,12 @@ export class EmployeesService {
         role: u.role || 'EMPLOYEE',
         department: u.department?.name || 'Engineering',
         avatar: u.avatar || initials,
+        // Resignation is a separate axis from moment-to-moment activity -
+        // a resigned employee's real-time online/break/offline state is
+        // moot, so this is surfaced independently rather than folded into
+        // `status` as a 4th value every existing consumer would need to
+        // handle.
+        isActive: u.isActive,
         status: status, // 'ACTIVE' (Online), 'BREAK' (Break), 'INACTIVE' (Offline)
         checkIn: checkInStr,
         productivity: 95,

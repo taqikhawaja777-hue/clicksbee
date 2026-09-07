@@ -33,4 +33,9 @@ export class RegisterDto {
   @IsEnum(Role)
   @IsOptional()
   role?: Role = Role.ADMIN;
+
+  @ApiPropertyOptional({ example: 'Engineering' })
+  @IsString()
+  @IsOptional()
+  departmentName?: string;
 }

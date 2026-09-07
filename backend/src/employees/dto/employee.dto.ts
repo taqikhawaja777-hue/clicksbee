@@ -73,6 +73,11 @@ export class UpdateEmployeeDto {
   @IsOptional()
   departmentId?: string;
 
+  @ApiPropertyOptional({ example: 'Engineering', description: 'Find-or-create by name within this org, an alternative to passing a departmentId directly' })
+  @IsString()
+  @IsOptional()
+  departmentName?: string;
+
   @ApiPropertyOptional()
   @IsString()
   @IsOptional()
@@ -83,7 +88,7 @@ export class UpdateEmployeeDto {
   @IsOptional()
   managerId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Set to false to mark this employee as resigned' })
   @IsOptional()
   isActive?: boolean;
 }

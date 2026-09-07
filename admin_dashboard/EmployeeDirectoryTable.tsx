@@ -1,5 +1,24 @@
 import React, { useState } from 'react';
 import { Search, Plus, Edit2, Trash2, MoreVertical, ChevronDown } from 'lucide-react';
+import { productivityApiService, EmployeeIdleStatus, DailyReportRow } from './src/services/productivityApi.service';
+
+const DIRECTORY_POLL_INTERVAL_MS = 30000;
+
+function mapIdleStatusToDirectoryStatus(status: EmployeeIdleStatus['status']): 'Online' | 'Break' | 'Offline' {
+  if (status === 'ON_BREAK') return 'Break';
+  if (status === 'NOT_CHECKED_IN' || status === 'CHECKED_OUT') return 'Offline';
+  return 'Online'; // ACTIVE / ACTIVE_JABBER / ACTIVE_WILDIX / IDLE / AWAY - still on shift.
+}
+
+function todayDateKey(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+const DEPARTMENT_OPTIONS = ['Engineering', 'Design', 'Marketing', 'Sales', 'HR'];
 
 export interface EmployeeDirectoryItem {
   id: string;
@@ -11,6 +30,7 @@ export interface EmployeeDirectoryItem {
   status: 'Online' | 'Break' | 'Offline';
   productivity: number;
   avatar: string;
+  isActive: boolean;
 }
 
 const initialEmployees: EmployeeDirectoryItem[] = [];
@@ -32,17 +52,64 @@ export const EmployeeDirectoryTable: React.FC = () => {
         else if (json?.data && Array.isArray(json.data)) list = json.data;
 
         if (list.length > 0) {
-          const mapped: EmployeeDirectoryItem[] = list.map((emp: any, idx: number) => ({
-            id: emp.id || `emp-${idx}`,
-            name: emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || 'Registered User',
-            email: emp.email || 'user@company.corp',
-            department: typeof emp.department === 'string' ? emp.department : (emp.department?.name || 'Engineering'),
-            role: emp.role || 'Full Stack Engineer',
-            checkIn: emp.checkIn || '--',
-            status: emp.status === 'ACTIVE' || emp.status === 'Online' ? 'Online' : (emp.status === 'BREAK' || emp.status === 'Break' ? 'Break' : 'Offline'),
-            productivity: emp.productivity || 95,
-            avatar: emp.avatar || (emp.name ? emp.name.split(' ').map((n: string) => n[0]).join('').toUpperCase() : 'RU'),
-          }));
+          // Cross-reference the productivity_service's real, today-scoped
+          // per-employee data, joined through employeeId -> email (its own
+          // API responses only carry employeeName, and this MongoDB list
+          // already has two different real people both named "usman
+          // khawaja" - matching by name alone would silently merge their
+          // data). The NestJS side always returned a hardcoded
+          // `productivity: 95` for every employee regardless of actual
+          // activity, which is why every row in this table showed the
+          // identical 95% - and its own `status`/`checkIn` fields are a
+          // separate, not-necessarily-current concept from here on, so
+          // once a productivity_service record exists for someone, it's
+          // used as the ONLY source of Status/Check-In/Productivity for
+          // that row rather than blending two different definitions.
+          // Falls back to Offline/--/0% (not other fake numbers) for
+          // anyone who hasn't opened the desktop app today at all.
+          const today = todayDateKey();
+          let liveByEmail = new Map<string, EmployeeIdleStatus>();
+          let attendanceByEmail = new Map<string, DailyReportRow>();
+          try {
+            const [employeesList, idleSummary, attendance] = await Promise.all([
+              productivityApiService.listEmployees(),
+              productivityApiService.getIdleTimeSummary(),
+              productivityApiService.getAttendanceReport(today, today),
+            ]);
+            const idToEmail = new Map(employeesList.map((e) => [e.id, e.email.toLowerCase()] as const));
+            liveByEmail = new Map(
+              idleSummary.employees
+                .map((e) => [idToEmail.get(e.employeeId), e] as const)
+                .filter((pair): pair is [string, EmployeeIdleStatus] => !!pair[0]),
+            );
+            attendanceByEmail = new Map(
+              attendance.rows
+                .map((r) => [idToEmail.get(r.employeeId), r] as const)
+                .filter((pair): pair is [string, DailyReportRow] => !!pair[0]),
+            );
+          } catch (e) {
+            console.warn('EmployeeDirectoryTable productivity_service fetch error:', e);
+          }
+
+          const mapped: EmployeeDirectoryItem[] = list.map((emp: any, idx: number) => {
+            const email = (emp.email || 'user@company.corp').toLowerCase();
+            const live = liveByEmail.get(email);
+            const attendanceRow = attendanceByEmail.get(email);
+            return {
+              id: emp.id || `emp-${idx}`,
+              name: emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || 'Registered User',
+              email: emp.email || 'user@company.corp',
+              department: typeof emp.department === 'string' ? emp.department : (emp.department?.name || 'Engineering'),
+              role: emp.role || 'Full Stack Engineer',
+              checkIn: attendanceRow?.checkInAt
+                ? new Date(attendanceRow.checkInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : '--',
+              status: live ? mapIdleStatusToDirectoryStatus(live.status) : 'Offline',
+              productivity: live ? Math.round(live.productivityPercentage) : 0,
+              avatar: emp.avatar || (emp.name ? emp.name.split(' ').map((n: string) => n[0]).join('').toUpperCase() : 'RU'),
+              isActive: emp.isActive !== false,
+            };
+          });
           setEmployees(mapped);
           return;
         }
@@ -56,6 +123,8 @@ export const EmployeeDirectoryTable: React.FC = () => {
 
   React.useEffect(() => {
     fetchEmployeesFromApi();
+    const interval = setInterval(fetchEmployeesFromApi, DIRECTORY_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
   }, []);
 
   // New Employee Form State
@@ -91,6 +160,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
       status: 'Online',
       productivity: 95,
       avatar,
+      isActive: true,
     };
 
     setEmployees([newEmp, ...employees]);
@@ -101,6 +171,42 @@ export const EmployeeDirectoryTable: React.FC = () => {
 
   const handleDeleteEmployee = (id: string) => {
     setEmployees(employees.filter(emp => emp.id !== id));
+  };
+
+  // Edit Employee (Department + Resignation) - the only two fields this
+  // modal exposes, matching exactly what was asked for. Calls the real
+  // PATCH /employees/:id endpoint (already supported department/isActive
+  // updates server-side; only the department-by-name resolution needed
+  // adding) rather than only updating local state like Add/Delete still do.
+  const [editingEmployee, setEditingEmployee] = useState<EmployeeDirectoryItem | null>(null);
+  const [editDept, setEditDept] = useState<string>(DEPARTMENT_OPTIONS[0]);
+  const [editIsActive, setEditIsActive] = useState<boolean>(true);
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
+
+  const openEditModal = (emp: EmployeeDirectoryItem) => {
+    setEditingEmployee(emp);
+    setEditDept(DEPARTMENT_OPTIONS.includes(emp.department) ? emp.department : DEPARTMENT_OPTIONS[0]);
+    setEditIsActive(emp.isActive);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingEmployee) return;
+    setIsSavingEdit(true);
+    try {
+      const res = await fetch(`http://localhost:3000/api/v1/employees/${editingEmployee.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ departmentName: editDept, isActive: editIsActive }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setEditingEmployee(null);
+      await fetchEmployeesFromApi();
+    } catch (err) {
+      console.warn('EmployeeDirectoryTable update error:', err);
+    } finally {
+      setIsSavingEdit(false);
+    }
   };
 
   return (
@@ -199,25 +305,37 @@ export const EmployeeDirectoryTable: React.FC = () => {
                   {emp.checkIn}
                 </td>
 
-                {/* Status Pill Badge */}
+                {/* Status Pill Badge - resignation is a separate axis from
+                    moment-to-moment activity, so it takes over this badge
+                    entirely rather than being just another color of
+                    Online/Break/Offline. */}
                 <td className="py-4 px-6">
-                  {emp.status === 'Online' && (
-                    <span className="inline-flex items-center space-x-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/50 px-3 py-1 rounded-full text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                      <span>Online</span>
+                  {!emp.isActive ? (
+                    <span className="inline-flex items-center space-x-1.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 px-3 py-1 rounded-full text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                      <span>Resigned</span>
                     </span>
-                  )}
-                  {emp.status === 'Break' && (
-                    <span className="inline-flex items-center space-x-1.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 px-3 py-1 rounded-full text-[11px] font-bold text-amber-600 dark:text-amber-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                      <span>Break</span>
-                    </span>
-                  )}
-                  {emp.status === 'Offline' && (
-                    <span className="inline-flex items-center space-x-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1 rounded-full text-[11px] font-bold text-slate-500 dark:text-slate-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                      <span>Offline</span>
-                    </span>
+                  ) : (
+                    <>
+                      {emp.status === 'Online' && (
+                        <span className="inline-flex items-center space-x-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/50 px-3 py-1 rounded-full text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <span>Online</span>
+                        </span>
+                      )}
+                      {emp.status === 'Break' && (
+                        <span className="inline-flex items-center space-x-1.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 px-3 py-1 rounded-full text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                          <span>Break</span>
+                        </span>
+                      )}
+                      {emp.status === 'Offline' && (
+                        <span className="inline-flex items-center space-x-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1 rounded-full text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                          <span>Offline</span>
+                        </span>
+                      )}
+                    </>
                   )}
                 </td>
 
@@ -241,7 +359,10 @@ export const EmployeeDirectoryTable: React.FC = () => {
                 {/* Actions (Pencil, Trash, More) */}
                 <td className="py-4 px-6 text-right">
                   <div className="flex items-center justify-end space-x-1.5">
-                    <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-indigo-500 transition-colors">
+                    <button
+                      onClick={() => openEditModal(emp)}
+                      className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-indigo-500 transition-colors"
+                    >
                       <Edit2 className="w-3.5 h-3.5" />
                     </button>
                     <button 
@@ -335,6 +456,69 @@ export const EmployeeDirectoryTable: React.FC = () => {
                   className="px-4 py-2 bg-[#534bf3] text-white font-bold text-xs rounded-xl shadow-md"
                 >
                   Save Employee
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Employee Modal - Department + Resignation, the two fields
+          this action actually exposes. Saves via the real PATCH endpoint,
+          unlike Add/Delete above which still only touch local state. */}
+      {editingEmployee && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Edit {editingEmployee.name}</h3>
+
+            <form onSubmit={handleSaveEdit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Department</label>
+                <select
+                  value={editDept}
+                  onChange={(e) => setEditDept(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none"
+                >
+                  {DEPARTMENT_OPTIONS.map((dept) => (
+                    <option key={dept} value={dept}>{dept}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Employment Status</label>
+                <div className="grid grid-cols-2 gap-2 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-xl text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setEditIsActive(true)}
+                    className={`py-2 rounded-lg transition-all ${editIsActive ? 'bg-white dark:bg-slate-700 text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+                  >
+                    Active
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditIsActive(false)}
+                    className={`py-2 rounded-lg transition-all ${!editIsActive ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500'}`}
+                  >
+                    Resigned
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingEmployee(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-100 rounded-xl"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  className="px-4 py-2 bg-[#534bf3] text-white font-bold text-xs rounded-xl shadow-md disabled:opacity-50"
+                >
+                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
             </form>

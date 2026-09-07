@@ -2,12 +2,19 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { MonitorGateway } from './monitor.gateway';
-import { GroqVisionService, VisionAnalysisResult } from './groq-vision.service';
+import { GeminiVisionService, VisionAnalysisResult } from './gemini-vision.service';
 
 export interface AnalyzeScreenshotDto {
   employeeId: string;
   imageBase64: string;
   timestamp?: string;
+  // Defaults true (the original, always-persisted behavior) so any other
+  // caller keeps working unchanged. The Live Monitor page's dedicated
+  // 10-second capture loop passes false - persisting a full screenshot
+  // every 10s (vs. the existing 5-minute archival loop) would bloat the
+  // Screenshot gallery table ~30x for a page that only needs the latest
+  // live result, not a permanent history.
+  persist?: boolean;
 }
 
 export interface ActivityAnalysisResult {
@@ -48,20 +55,66 @@ export class MonitorService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly monitorGateway: MonitorGateway,
-    private readonly groqVisionService: GroqVisionService,
+    private readonly visionService: GeminiVisionService,
   ) {}
 
   /**
-   * Analyze screenshot using GroqVisionService and broadcast update
+   * Analyze screenshot using GeminiVisionService and broadcast update
    */
   async analyzeScreenshot(dto: AnalyzeScreenshotDto): Promise<{ success: boolean; data?: ActivityAnalysisResult }> {
-    const { employeeId, imageBase64, timestamp } = dto;
+    const { employeeId, imageBase64, timestamp, persist = true } = dto;
     const captureTime = timestamp || new Date().toISOString();
 
-    this.logger.log(`[MonitorService] Analyzing screenshot for employeeId: ${employeeId}`);
+    // Look up the real employee (with department + resignation status)
+    // BEFORE spending a Gemini API call - a resigned employee shouldn't be
+    // actively evaluated at all, and the department is passed into the
+    // vision prompt so task-relevance is judged against what's actually
+    // normal for that person's job (e.g. Figma is relevant for Design,
+    // not for Engineering).
+    let user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { id: employeeId },
+          { email: { contains: employeeId, mode: 'insensitive' } },
+          { firstName: { contains: employeeId, mode: 'insensitive' } },
+        ],
+      },
+      include: { department: true },
+    });
 
-    // Delegate AI analysis to GroqVisionService
-    const visionResult: VisionAnalysisResult = await this.groqVisionService.analyzeScreenshot(imageBase64);
+    if (!user) {
+      this.logger.warn(`[MonitorService] analyzeScreenshot: no matching user for employeeId=${employeeId}`);
+      return { success: false };
+    }
+
+    if (!user.isActive) {
+      this.logger.log(`[MonitorService] Skipping vision analysis for resigned employee ${user.id} - no Gemini call made.`);
+      const notMonitoredResult: ActivityAnalysisResult = {
+        summary: 'This employee has resigned and is no longer being monitored.',
+        taskRelevance: 'No',
+        activityType: 'Idle',
+        confidenceScore: 0,
+        status: 'IDLE',
+        activeWindow: 'N/A',
+        timestamp: captureTime,
+        detectedApps: [],
+        concerns: [],
+      };
+      this.monitorGateway.broadcastEmployeeUpdate(employeeId, {
+        ...notMonitoredResult,
+        employeeIsActive: false,
+        department: user.department?.name || null,
+      } as any);
+      return { success: true, data: notMonitoredResult };
+    }
+
+    this.logger.log(`[MonitorService] Analyzing screenshot for employeeId: ${employeeId} (department=${user.department?.name || 'none'})`);
+
+    // Delegate AI analysis to GeminiVisionService
+    const visionResult: VisionAnalysisResult = await this.visionService.analyzeScreenshot(
+      imageBase64,
+      user.department?.name,
+    );
 
     const analysisResult: ActivityAnalysisResult = {
       ...visionResult,
@@ -69,8 +122,15 @@ export class MonitorService {
       imageUrl: imageBase64,
     };
 
-    // Broadcast via WebSocket Gateway
-    this.monitorGateway.broadcastEmployeeUpdate(employeeId, analysisResult);
+    // Broadcast via WebSocket Gateway - includes department/resignation
+    // context alongside the vision result so the Live Monitor page can
+    // show "is this relevant to their actual job" without a second
+    // round-trip.
+    this.monitorGateway.broadcastEmployeeUpdate(employeeId, {
+      ...analysisResult,
+      employeeIsActive: user.isActive,
+      department: user.department?.name || null,
+    } as any);
 
     // Update in-memory status
     this.employeeStatus.set(employeeId, {
@@ -79,23 +139,8 @@ export class MonitorService {
       activeWindow: visionResult.activeWindow,
     });
 
-    // Save result to database if matching User exists
-    try {
-      let user = await this.prisma.user.findFirst({
-        where: {
-          OR: [
-            { id: employeeId },
-            { email: { contains: employeeId, mode: 'insensitive' } },
-            { firstName: { contains: employeeId, mode: 'insensitive' } },
-          ],
-        },
-      });
-
-      if (!user) {
-        user = await this.prisma.user.findFirst();
-      }
-
-      if (user) {
+    if (persist) {
+      try {
         await (this.prisma.screenshot as any).create({
           data: {
             userId: user.id,
@@ -108,9 +153,9 @@ export class MonitorService {
             progressPercentage: analysisResult.confidenceScore,
           },
         });
+      } catch (dbErr) {
+        this.logger.warn(`[MonitorService] DB Save fallback: ${dbErr.message}`);
       }
-    } catch (dbErr) {
-      this.logger.warn(`[MonitorService] DB Save fallback: ${dbErr.message}`);
     }
 
     return { success: true, data: analysisResult };

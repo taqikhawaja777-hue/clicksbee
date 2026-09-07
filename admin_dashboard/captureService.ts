@@ -20,15 +20,42 @@ export interface ScreenshotRecord {
 let screenshotRecordsStore: ScreenshotRecord[] = [];
 let offlineSyncQueue: ScreenshotRecord[] = [];
 let automatedCaptureTimer: NodeJS.Timeout | null = null;
+let liveVisionCaptureTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Whoever is actually logged in on this device right now - set via the
+ * 'set-monitor-employee-context' IPC handler right after a real login,
+ * using the real MongoDB User id (previously nothing ever called this;
+ * both capture loops below were hardcoded to a fake 'emp-101' user that
+ * doesn't exist, so every automated screenshot/analysis was silently
+ * attributed to nobody real regardless of who was actually signed in).
+ * null before login / after logout - both capture loops skip entirely
+ * rather than falling back to a fake placeholder.
+ */
+let currentEmployeeContext: { id: string; name: string; role: string } | null = null;
 
 /**
  * 1. AUTOMATIC TIMED TRIGGER & 2. SILENT DESKTOP CAPTURE
  */
 export async function captureDesktopScreen(
-  userId: string = 'emp-101', 
-  userName: string = 'umer Sohail', 
-  userRole: string = 'Full Stack Engineer'
+  userId?: string,
+  userName?: string,
+  userRole?: string
 ): Promise<ScreenshotRecord | null> {
+  // Manual-trigger callers already pass real values explicitly; the
+  // automated loop passes nothing and relies on whoever actually logged
+  // in via currentEmployeeContext. No employee known yet (not logged in,
+  // or the app just started) -> skip rather than falling back to a fake
+  // placeholder user that doesn't exist in the database.
+  const resolvedUserId = userId || currentEmployeeContext?.id;
+  const resolvedUserName = userName || currentEmployeeContext?.name;
+  const resolvedUserRole = userRole || currentEmployeeContext?.role || 'Employee';
+  if (!resolvedUserId || !resolvedUserName) {
+    return null;
+  }
+  userId = resolvedUserId;
+  userName = resolvedUserName;
+  userRole = resolvedUserRole;
   try {
     // STEP 1: Check System Activity using Electron powerMonitor
     const idleSeconds = powerMonitor.getSystemIdleTime();
@@ -186,19 +213,91 @@ export function startAutomated5MinScreenCaptureLoop(intervalMinutes: number = 5)
   console.log(`[CaptureService] Starting 5-minute silent automated desktop screen capture loop (${ms}ms)...`);
 
   automatedCaptureTimer = setInterval(async () => {
-    console.log('[CaptureService] 5-minute automated capture loop executing...');
-    await captureDesktopScreen('emp-101', 'umer Sohail', 'Full Stack Engineer');
+    if (!currentEmployeeContext) return; // nobody logged in yet - nothing to attribute a capture to
+    console.log(`[CaptureService] 5-minute automated capture loop executing for ${currentEmployeeContext.name}...`);
+    await captureDesktopScreen();
   }, ms);
+}
+
+/**
+ * LIVE MONITOR VISION ANALYSIS - separate, faster capture loop feeding the
+ * Manager Portal's Live Monitor page. Deliberately does NOT go through
+ * transmitAndStoreScreenshot()/the Screenshot gallery table - persisting a
+ * full screenshot every 10s (vs. the archival loop's 5 minutes) would
+ * bloat that table ~30x for a page that only needs the latest live result,
+ * not a permanent history. Posts straight to /monitor/analyze with
+ * persist:false; the backend still broadcasts the result over WebSocket
+ * for the Live Monitor page to pick up.
+ */
+const LIVE_VISION_INTERVAL_MS = 10000;
+
+async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
+  if (!currentEmployeeContext) return;
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1280, height: 720 },
+    });
+    if (!sources || sources.length === 0) return;
+
+    const imageBase64 = sources[0].thumbnail.toDataURL();
+    const response = await fetch('http://localhost:3000/api/v1/monitor/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        employeeId: currentEmployeeContext.id,
+        imageBase64,
+        timestamp: new Date().toISOString(),
+        persist: false,
+      }),
+    });
+    if (!response.ok) {
+      console.warn(`[CaptureService] Live vision analysis request failed: HTTP ${response.status}`);
+    }
+  } catch (err) {
+    console.warn('[CaptureService] Live vision analysis capture failed:', err);
+  }
+}
+
+function startLiveVisionMonitoring(): void {
+  if (liveVisionCaptureTimer) clearInterval(liveVisionCaptureTimer);
+  liveVisionCaptureTimer = setInterval(() => void captureAndAnalyzeForLiveMonitor(), LIVE_VISION_INTERVAL_MS);
+  void captureAndAnalyzeForLiveMonitor(); // don't wait 10s for the first result
+}
+
+function stopLiveVisionMonitoring(): void {
+  if (liveVisionCaptureTimer) {
+    clearInterval(liveVisionCaptureTimer);
+    liveVisionCaptureTimer = null;
+  }
 }
 
 /**
  * STEP 4: REGISTER IPC HANDLERS FOR MANAGER DASHBOARD MANUAL OVERRIDE
  */
 export function registerCaptureIpcHandlers(): void {
+  // Called right after a real login (see dashboard.tsx) with the actual
+  // MongoDB user id/name/role - both capture loops above were previously
+  // hardcoded to a fake 'emp-101' user that doesn't exist in the database,
+  // so every automated screenshot/analysis was silently attributed to
+  // nobody real regardless of who was actually signed in.
+  ipcMain.handle('set-monitor-employee-context', async (_event, employeeId: string, employeeName: string, employeeRole?: string) => {
+    if (!employeeId || !employeeName) return { success: false };
+    currentEmployeeContext = { id: employeeId, name: employeeName, role: employeeRole || 'Employee' };
+    startLiveVisionMonitoring();
+    return { success: true };
+  });
+
+  ipcMain.handle('clear-monitor-employee-context', async () => {
+    currentEmployeeContext = null;
+    stopLiveVisionMonitoring();
+    return { success: true };
+  });
+
   // Manual Override: Manager clicks "Capture Live Screen Now" -> Immediate silent capture within seconds
   ipcMain.handle('trigger-manual-capture', async (_event, targetUserId?: string, targetUserName?: string, targetUserRole?: string) => {
-    console.log(`[CaptureService] Manager Manual Override triggered for ${targetUserName || 'umer Sohail'}`);
-    const record = await captureDesktopScreen(targetUserId || 'emp-101', targetUserName || 'umer Sohail', targetUserRole || 'Full Stack Engineer');
+    console.log(`[CaptureService] Manager Manual Override triggered for ${targetUserName || currentEmployeeContext?.name || 'unknown'}`);
+    const record = await captureDesktopScreen(targetUserId, targetUserName, targetUserRole);
     return { success: !!record, record, allRecords: screenshotRecordsStore };
   });
 
@@ -214,7 +313,8 @@ export function registerCaptureIpcHandlers(): void {
     return results;
   });
 
-  // Start 5-minute automated background loop
+  // Start 5-minute automated background loop (a no-op each tick until a
+  // real employee context is set via set-monitor-employee-context)
   startAutomated5MinScreenCaptureLoop(5);
 }
 
