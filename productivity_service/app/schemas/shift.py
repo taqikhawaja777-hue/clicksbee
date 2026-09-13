@@ -6,7 +6,7 @@ from uuid import UUID
 from . import CamelModel
 
 EventType = Literal['check_in', 'check_out', 'break_start', 'break_end']
-BreakType = Literal['LUNCH_ZUHAR', 'TEA_ASAR', 'MANUAL']
+BreakType = Literal['LUNCH_ZUHAR', 'TEA_ASAR', 'MANUAL', 'WASHROOM']
 TriggeredBy = Literal['manual', 'scheduled']
 
 # NOT_CHECKED_IN | CHECKED_OUT | ON_BREAK | ACTIVE_JABBER | ACTIVE_WILDIX |
@@ -37,12 +37,46 @@ class BreakStatusOut(CamelModel):
     break_started_at: datetime | None = None
 
 
+class ComplianceBreakdownOut(CamelModel):
+    """Where Compliance Score's points were lost, if any - see
+    ProductivityService._compute_compliance_score()."""
+
+    idle_penalty_points: float
+    late_return_penalty_points: float
+    washroom_penalty_points: float
+    idle_seconds: int
+    idle_threshold_seconds: int
+    late_return_count: int
+    washroom_break_count: int
+    washroom_over_limit_count: int
+    washroom_over_duration_count: int
+
+
+class ProductivityWeightsOut(CamelModel):
+    """The weights actually applied to this score, from productivity_config
+    at calculation time - lets the UI show "40% Attendance + 30% App Focus
+    + 30% Compliance" using the real configured numbers, not a hardcoded
+    guess that could drift from what was actually used."""
+
+    attendance_weight: float
+    app_focus_weight: float
+    compliance_weight: float
+    call_efficiency_weight: float
+
+
 class ShiftSummaryOut(CamelModel):
     """THE single authoritative calculation for one employee/day - see
     ProductivityService.get_shift_summary(). Every dashboard component that
     shows active/idle/break/shift-duration/camera/status for an employee
     reads this same shape (directly, or via the all-employees idle-time
-    summary that delegates to the same function)."""
+    summary that delegates to the same function).
+
+    productivity_percentage is the unified Overall Productivity score
+    (Attendance Ratio + App Focus Score + Compliance Score, weighted) - see
+    ProductivityService._compute_overall_productivity(). The three
+    sub-scores and the compliance penalty breakdown are exposed below for
+    anywhere that wants to show the full calculation, not just the final
+    number."""
 
     employee_id: UUID
     date: date_
@@ -55,6 +89,11 @@ class ShiftSummaryOut(CamelModel):
     jabber_seconds: int
     wildix_seconds: int
     productivity_percentage: float
+    attendance_ratio: float
+    app_focus_score: float
+    compliance_score: float
+    compliance_breakdown: ComplianceBreakdownOut
+    weights_used: ProductivityWeightsOut
     status: ShiftStatus
     camera_active_seconds: int
     input_active_seconds: int

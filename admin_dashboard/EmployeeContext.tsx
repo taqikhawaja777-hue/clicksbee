@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { apiService } from './src/services/api.service';
+import { socketService } from './src/services/socket.service';
 import { productivityApiService } from './src/services/productivityApi.service';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
 import { SHIFT_STATE_CHANGED_EVENT } from './src/hooks/useIdleTimeSummary';
@@ -31,28 +32,6 @@ const MAX_PERSISTED_SCREENSHOTS = 20;
 function stripImageDataForPersistence<T extends { imageUrl?: string }>(item: T): T {
   if (!item || !item.imageUrl) return item;
   return { ...item, imageUrl: '' };
-}
-
-/**
- * localStorage.setItem, but survives QuotaExceededError by dropping the
- * oldest half of `list` and retrying once rather than losing the write (and
- * whatever offline-queue/state update depended on it) entirely. Always
- * strips image data first since that's what makes these payloads large
- * enough to hit the quota in the first place.
- */
-function safeSetListItem(key: string, list: any[], maxLength: number = MAX_PERSISTED_SCREENSHOTS): void {
-  const trimmed = list.slice(0, maxLength).map(stripImageDataForPersistence);
-  try {
-    localStorage.setItem(key, JSON.stringify(trimmed));
-  } catch (e) {
-    console.warn(`[localStorage] setItem('${key}') failed (quota?), retrying with half the entries:`, e);
-    try {
-      const half = trimmed.slice(0, Math.max(1, Math.floor(trimmed.length / 2)));
-      localStorage.setItem(key, JSON.stringify(half));
-    } catch (e2) {
-      console.warn(`[localStorage] retry for '${key}' also failed, giving up on this write:`, e2);
-    }
-  }
 }
 
 /**
@@ -104,6 +83,11 @@ export interface UserProfile {
   name: string;
   email: string;
   role: 'EMPLOYEE' | 'MANAGER' | 'ADMIN';
+  // Job title pick-list: 'SM' | 'CSR' | 'Team Lead' | 'HR' | undefined.
+  // Drives the "management tier" (SM/HR, alongside role MANAGER/ADMIN) vs
+  // "floor tier" (CSR/Team Lead/unset) split for messaging permissions and
+  // the SM/HR-only Idle Time nav item - see dashboard.tsx.
+  designation?: string;
   avatar: string;
 }
 
@@ -166,8 +150,25 @@ export interface ScreenshotRecordItem {
 }
 
 export interface DayHours {
-  day: 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
+  // Widened from a weekday-literal union to a plain string so the same
+  // shape can carry "Wk 1".."Wk 5" labels for the This Month timeframe,
+  // not just Mon-Fri - every consumer (ThisWeeksHoursWidget,
+  // WeeklySessionStatisticsWidget, dashboard.tsx's bar chart) only ever
+  // reads `day` as a recharts/display label, never branches on its value.
+  day: string;
   hours: number;
+}
+
+export interface MonthlyAttendanceSummary {
+  presentDays: number;
+  lateDays: number;
+  absentDays: number;
+  leaveDays: number;
+  // Real calendar days from the 1st of this month through today - the
+  // percentage denominator. Not attendanceHistory.length, which only ever
+  // grows from this browser's own local checkouts and never reflects the
+  // employee's real backend attendance record.
+  totalDaysElapsed: number;
 }
 
 export interface EmployeeContextType {
@@ -178,6 +179,12 @@ export interface EmployeeContextType {
   sessionHistory: SessionRecordItem[];
   screenshots: ScreenshotRecordItem[];
   weeklyHoursData: DayHours[];
+  monthlyAttendanceSummary: MonthlyAttendanceSummary;
+  // Refetches weeklyHoursData from real attendance report rows for the
+  // given timeframe. Exposed so dashboard.tsx's This Week/Last Week/This
+  // Month buttons can drive real data instead of only changing which
+  // button looks selected.
+  fetchWeeklyHoursData: (timeframe?: 'This Week' | 'Last Week' | 'This Month') => Promise<void>;
   // The productivity_service (Supabase) employee id - the key everything
   // in useShiftSummary/idleTimeTracker/presenceDetector is keyed on. Set
   // once dashboard.tsx's login bootstrap resolves it via registerEmployee.
@@ -188,8 +195,7 @@ export interface EmployeeContextType {
   handleCheckIn: () => void;
   handleCheckOut: () => void;
   handleToggleBreak: () => void;
-  handleCompleteTask: () => void;
-  registerNewEmployee: (firstName: string, lastName: string, email: string, role: 'EMPLOYEE' | 'MANAGER', password?: string, department?: string) => Promise<void>;
+  registerNewEmployee: (firstName: string, lastName: string, email: string, role: 'EMPLOYEE' | 'MANAGER', password?: string, department?: string, designation?: string) => Promise<void>;
   loginEmployee: (email: string, password?: string, requestedRole?: 'EMPLOYEE' | 'MANAGER') => Promise<boolean>;
 }
 
@@ -212,6 +218,14 @@ function mapBackendStatusToSessionStatus(status: string): SessionState['status']
       return 'Present';
   }
 }
+
+// toISOString() converts to UTC first, which silently rolls a local
+// midnight back to the previous calendar day in any UTC+ timezone (e.g.
+// Asia/Karachi, UTC+5). Build the "YYYY-MM-DD" string from local date
+// parts instead, matching the Karachi-local calendar day the backend
+// report rows are already keyed by.
+const toDateStr = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 const getInitials = (n: string) => {
   const parts = n.trim().split(' ').filter(Boolean);
@@ -285,7 +299,7 @@ const getNewSignupBaseline = (
       targetHoursSeconds: 28800,
       activeTimeSeconds: 0,
       completedTasks: 0,
-      totalTasksAssigned: 15,
+      totalTasksAssigned: 0,
       productivityScore: 0,
       attendanceRate: 0,
     },
@@ -299,6 +313,13 @@ const getNewSignupBaseline = (
       { day: 'Thu' as const, hours: 0 },
       { day: 'Fri' as const, hours: 0 },
     ],
+    monthlyAttendanceSummary: {
+      presentDays: 0,
+      lateDays: 0,
+      absentDays: 0,
+      leaveDays: 0,
+      totalDaysElapsed: 0,
+    } as MonthlyAttendanceSummary,
   };
 };
 
@@ -306,15 +327,31 @@ const EmployeeContext = createContext<EmployeeContextType | undefined>(undefined
 
 export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState(() => {
+    const baseline = getNewSignupBaseline('umer', 'Sohail', 'employee@stitchmonitor.com', 'EMPLOYEE');
     try {
       const saved = localStorage.getItem('stitch_employee_state');
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        // Shallow-merge onto the current baseline rather than returning the
+        // parsed blob as-is - a state shape saved by an older build (e.g.
+        // before monthlyAttendanceSummary existed) is missing whatever
+        // fields were added since, and every consumer that destructures
+        // those fields directly (no `?.`) crashes the whole render tree on
+        // mount. Merging keeps old real data (attendanceHistory,
+        // sessionHistory, etc.) while guaranteeing newer fields are never
+        // undefined.
+        return {
+          ...baseline,
+          ...parsed,
+          session: { ...baseline.session, ...parsed.session },
+          metrics: { ...baseline.metrics, ...parsed.metrics },
+          monthlyAttendanceSummary: { ...baseline.monthlyAttendanceSummary, ...parsed.monthlyAttendanceSummary },
+        };
       }
     } catch (e) {
       console.log('LocalStorage load fallback');
     }
-    return getNewSignupBaseline('umer', 'Sohail', 'employee@stitchmonitor.com', 'EMPLOYEE');
+    return baseline;
   });
 
   const [productivityEmployeeId, setProductivityEmployeeId] = useState<string | null>(null);
@@ -346,107 +383,55 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [state]);
 
-  // STEP 3: TRANSMISSION & STORAGE LOGIC
-  const broadcastSharedScreenshot = async (newScreenshot: ScreenshotRecordItem) => {
-    try {
-      // Update LocalStorage (capped + stripped of image data - see
-      // safeSetListItem; the full-resolution image already goes out via
-      // BroadcastChannel below for any currently-open tab, and the backend
-      // feed is the real source of truth for anything reloading later)
-      const existingStr = localStorage.getItem('stitch_shared_screenshots');
-      const existingList = existingStr ? JSON.parse(existingStr) : [];
-      const updatedList = [newScreenshot, ...existingList.filter((item: any) => item.id !== newScreenshot.id)];
-      safeSetListItem('stitch_shared_screenshots', updatedList);
-
-      // Broadcast over BroadcastChannel
-      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        const bc = new BroadcastChannel('stitch_screen_capture_channel');
-        bc.postMessage({ type: 'REAL_SCREENSHOT_CAPTURED', screenshot: newScreenshot });
-        bc.close();
-      }
-
-      // POST to NestJS backend -> Saves PNG file on disk & record in MongoDB Atlas collection Screenshot
-      const apiRes = await fetch('http://localhost:3000/api/v1/screenshots/capture', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userName: newScreenshot.userName || 'umer Sohail',
-          userId: newScreenshot.userId || 'emp-101',
-          userRole: newScreenshot.userRole || 'Full Stack Engineer',
-          imageUrl: newScreenshot.imageUrl,
-          activeWindowName: newScreenshot.windowTitle || 'Employee Portal - Active Workstation',
-          timestamp: newScreenshot.timestamp,
-          date: newScreenshot.date,
-          isIdle: !!newScreenshot.isIdle,
-        }),
-      });
-
-      if (apiRes.ok) {
-        const savedDoc = await apiRes.json();
-        if (savedDoc && savedDoc.imageUrl) {
-          newScreenshot.imageUrl = savedDoc.imageUrl;
-          newScreenshot.syncStatus = 'ONLINE';
-        }
-      }
-    } catch (err) {
-      console.warn('[Transmission] Offline / Backend unreachable. Saving to offline queue:', err);
-      newScreenshot.syncStatus = 'QUEUED_OFFLINE';
-    }
-  };
-
-  // STEP 1: AUTOMATIC TIMED TRIGGER (Every 5 Minutes)
+  // STEP 1 & 3: AUTOMATIC 5-MINUTE CAPTURE + TRANSMISSION now live entirely
+  // in captureService.ts (the Electron main process), which POSTs straight
+  // to the admin PC's local screenshot server over the LAN instead of
+  // MongoDB. This effect used to independently capture its own screenshot
+  // AND upload it here too - since captureRealLiveDesktopScreen() itself
+  // triggers a capture+upload in captureService.ts via IPC, that meant a
+  // single 5-minute tick fired 2 separate uploads for the same moment.
+  // Now there is exactly one capture and one upload per interval (owned by
+  // captureService.ts's own timer), and this context just listens for the
+  // 'screenshot-captured-event' broadcast it already emits, to keep this
+  // employee's own screenshot history in sync.
   useEffect(() => {
-    let fiveMinInterval: NodeJS.Timeout | null = null;
+    if (state.user.role !== 'EMPLOYEE') return;
+    if (typeof window === 'undefined' || !(window as any).require) return;
+    const electron = (window as any).require('electron');
+    const ipcRenderer = electron?.ipcRenderer;
+    if (!ipcRenderer) return;
 
-    if (state.session.isActive && state.user.role === 'EMPLOYEE') {
-      const take5MinCapture = async () => {
-        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const realCapturedImg = await captureRealLiveDesktopScreen(
-          state.user.name || 'umer Sohail',
-          'Full Stack Engineer'
-        );
-
-        if (!realCapturedImg) {
-          console.warn('Skipping automated screenshot capture because no real screenshot was available.');
-          return;
-        }
-
-        const newScreenshot: ScreenshotRecordItem = {
-          id: `real-shot-${Date.now()}`,
-          userId: 'emp-101',
-          userName: state.user.name || 'umer Sohail',
-          userRole: 'Full Stack Engineer',
-          timestamp: timeStr,
-          timeAgo: 'Just now',
-          activeApp: 'Employee Portal',
-          windowTitle: 'WorkTrackPro Dashboard - Active Workstation Screen',
-          keyboardActivity: Math.floor(Math.random() * 20) + 80,
-          mouseActivity: Math.floor(Math.random() * 20) + 80,
-          imageUrl: realCapturedImg,
-          verified: true,
-          date: new Date().toISOString().split('T')[0],
-          isIdle: false,
-          screenshotNumber: (state.screenshots.length || 0) + 1,
-          totalTodayCount: (state.screenshots.length || 0) + 1,
-          syncStatus: 'ONLINE',
-        };
-
-        setState((prev: typeof state) => ({
-          ...prev,
-          screenshots: [newScreenshot, ...prev.screenshots],
-        }));
-
-        await broadcastSharedScreenshot(newScreenshot);
+    const handleScreenshotCaptured = (_event: any, record: any) => {
+      const newScreenshot: ScreenshotRecordItem = {
+        id: record.id,
+        userId: record.userId,
+        userName: record.userName,
+        userRole: record.userRole,
+        timestamp: record.timestamp,
+        timeAgo: 'Just now',
+        activeApp: record.activeWindowName || 'Active Desktop Application',
+        windowTitle: record.activeWindowName || 'Active Desktop Application',
+        keyboardActivity: 0,
+        mouseActivity: 0,
+        imageUrl: record.imageUrl,
+        verified: true,
+        date: record.date,
+        isIdle: record.isIdle,
+        screenshotNumber: record.screenshotNumber,
+        totalTodayCount: record.totalTodayCount,
+        syncStatus: record.syncStatus,
       };
-
-      take5MinCapture();
-      fiveMinInterval = setInterval(take5MinCapture, 300000);
-    }
-
-    return () => {
-      if (fiveMinInterval) clearInterval(fiveMinInterval);
+      setState((prev: typeof state) => ({
+        ...prev,
+        screenshots: [newScreenshot, ...prev.screenshots],
+      }));
     };
-  }, [state.session.isActive, state.user.name, state.user.role]);
+
+    ipcRenderer.on('screenshot-captured-event', handleScreenshotCaptured);
+    return () => {
+      ipcRenderer.removeListener('screenshot-captured-event', handleScreenshotCaptured);
+    };
+  }, [state.user.role]);
 
   // Sync session/metrics from the single source of truth (useShiftSummary)
   // instead of ticking a local timer - shiftDurationSeconds is already
@@ -466,15 +451,6 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const nextStatus = mapBackendStatusToSessionStatus(shiftSummary.status);
       const nextIsActive = shiftSummary.status !== 'NOT_CHECKED_IN' && shiftSummary.status !== 'CHECKED_OUT';
 
-      const target = prev.metrics.targetHoursSeconds || 28800;
-      const timeEfficiency = Math.min(nextActive / target, 1);
-      const taskCompletionRate = prev.metrics.totalTasksAssigned > 0
-        ? prev.metrics.completedTasks / prev.metrics.totalTasksAssigned
-        : 0;
-      const calcProductivity = prev.metrics.totalTasksAssigned > 0
-        ? Math.round(((timeEfficiency * 0.5) + (taskCompletionRate * 0.5)) * 100)
-        : Math.round(timeEfficiency * 100);
-
       return {
         ...prev,
         session: {
@@ -488,7 +464,12 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           ...prev.metrics,
           todayHoursSeconds: nextElapsed,
           activeTimeSeconds: nextActive,
-          productivityScore: calcProductivity,
+          // Unified Overall Productivity score from the backend (Attendance
+          // Ratio + App Focus Score + Compliance Score, weighted) - was
+          // previously a local 50/50 time-vs-task-completion blend computed
+          // here, unrelated to the formula every other card/report uses.
+          // See ProductivityService._compute_overall_productivity().
+          productivityScore: Math.round(shiftSummary.productivityPercentage),
         },
       };
     });
@@ -537,10 +518,15 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const handleCheckInImpl = async () => {
     const startTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const realImg = await captureRealLiveDesktopScreen(
-      state.user.name || 'umer Sohail',
-      'Full Stack Engineer'
-    );
+    // Triggers a real capture+upload in captureService.ts (main process)
+    // via IPC, using the actual logged-in employee's id/name - it already
+    // broadcasts 'screenshot-captured-event', which the listener above
+    // picks up to update state.screenshots. This used to ALSO build its
+    // own duplicate record here (with a hardcoded fake 'emp-101' id) and
+    // upload it a second time via broadcastSharedScreenshot() - removed,
+    // since captureService.ts's own upload is the real, correctly-
+    // attributed one.
+    void captureRealLiveDesktopScreen(state.user.name || 'umer Sohail', 'Full Stack Engineer');
 
     const syncShiftCheckIn = async () => {
       const id = await ensureProductivityEmployeeId();
@@ -552,47 +538,6 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       } catch (e) {
         console.warn('[EmployeeContext] Failed to log shift check-in:', e);
       }
-    };
-
-    if (!realImg) {
-      console.warn('Check-in capture skipped: no real screenshot available.');
-      setState((prev: typeof state) => ({
-        ...prev,
-        session: {
-          isActive: true,
-          startTime: startTimeStr,
-          elapsedSeconds: 0,
-          breakSeconds: 0,
-          status: 'Present',
-        },
-        metrics: {
-          ...prev.metrics,
-          todayHoursSeconds: 0,
-          activeTimeSeconds: 0,
-        },
-      }));
-      await syncShiftCheckIn();
-      return;
-    }
-
-    const newScreenshot: ScreenshotRecordItem = {
-      id: `cap-${Date.now()}`,
-      userId: 'emp-101',
-      userName: state.user.name || 'umer Sohail',
-      userRole: 'Full Stack Engineer',
-      timestamp: startTimeStr,
-      timeAgo: 'Just now',
-      activeApp: 'Employee Portal',
-      windowTitle: 'WorkTrackPro Dashboard - Active Workstation Screen',
-      keyboardActivity: 95,
-      mouseActivity: 90,
-      imageUrl: realImg,
-      verified: true,
-      date: new Date().toISOString().split('T')[0],
-      isIdle: false,
-      screenshotNumber: 1,
-      totalTodayCount: 1,
-      syncStatus: 'ONLINE',
     };
 
     setState((prev: typeof state) => ({
@@ -609,10 +554,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         todayHoursSeconds: 0,
         activeTimeSeconds: 0,
       },
-      screenshots: [newScreenshot, ...prev.screenshots],
     }));
-
-    await broadcastSharedScreenshot(newScreenshot);
 
     try {
       const listRes = await fetch('http://localhost:3000/api/v1/employees/all');
@@ -648,23 +590,12 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const handleCheckOutImpl = async () => {
     setState((prev: typeof state) => {
       const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const todayDate = new Date().toISOString().split('T')[0];
       const todayShortDate = new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
-      
+
       const hrs = Math.floor(prev.session.elapsedSeconds / 3600);
       const mins = Math.floor((prev.session.elapsedSeconds % 3600) / 60);
       const durationStr = `${hrs}h ${mins}m`;
       const breakMinsStr = `${Math.floor(prev.session.breakSeconds / 60)}m`;
-
-      const newAttRecord: AttendanceRecordItem = {
-        id: `att-${Date.now()}`,
-        date: todayDate,
-        checkIn: prev.session.startTime || '09:00',
-        checkOut: nowStr,
-        break: breakMinsStr,
-        totalHours: durationStr,
-        status: 'Present',
-      };
 
       const newSessRecord: SessionRecordItem = {
         id: `sess-${Date.now()}`,
@@ -676,23 +607,6 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         status: 'Completed',
       };
 
-      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
-      const todayDayName = dayNames[new Date().getDay()];
-      const loggedHoursNum = Number((prev.session.elapsedSeconds / 3600).toFixed(1));
-
-      const updatedWeeklyData = prev.weeklyHoursData.map((d: DayHours) => {
-        if (d.day === todayDayName) {
-          return { ...d, hours: loggedHoursNum };
-        }
-        return d;
-      });
-
-      const updatedAttHistory = [newAttRecord, ...prev.attendanceHistory];
-      const totalDays = updatedAttHistory.length;
-      const presentDays = updatedAttHistory.filter(h => h.status === 'Present' || h.status === 'Late').length;
-      const halfDays = updatedAttHistory.filter(h => h.status === 'Half Day').length;
-      const calcAttendanceRate = totalDays > 0 ? Math.round(((presentDays + (halfDays * 0.5)) / totalDays) * 100) : 0;
-
       return {
         ...prev,
         session: {
@@ -700,13 +614,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           isActive: false,
           status: 'Checked Out',
         },
-        metrics: {
-          ...prev.metrics,
-          attendanceRate: calcAttendanceRate,
-        },
-        attendanceHistory: updatedAttHistory,
         sessionHistory: [newSessRecord, ...prev.sessionHistory],
-        weeklyHoursData: updatedWeeklyData,
       };
     });
 
@@ -730,6 +638,13 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         await productivityApiService.checkOutShift(productivityEmployeeId);
         await refreshShiftSummary();
         notifyShiftStateChanged();
+        // Refresh the Weekly Productivity Breakdown chart, This Month
+        // card, and Attendance History table from the real report row
+        // this checkout just created, instead of the old
+        // locally-guessed/local-only updates.
+        fetchWeeklyHoursData('This Week');
+        fetchMonthlyAttendanceSummary();
+        fetchAttendanceHistory();
       } catch (e) {
         console.warn('[EmployeeContext] Failed to log shift check-out:', e);
       }
@@ -776,31 +691,220 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  // Complete Task
-  const handleCompleteTask = () => {
-    setState((prev: typeof state) => {
-      const total = prev.metrics.totalTasksAssigned || 15;
-      const current = prev.metrics.completedTasks;
-      
-      let nextCompleted = current + 1;
-      if (nextCompleted > total) {
-        nextCompleted = 0;
+  // Real assigned/completed task counts (was previously a fake local
+  // counter starting from a hardcoded "15 total tasks" baseline for every
+  // employee, with a "+ Done" button that just incremented it and wrapped
+  // back to 0 - never touched the real Task backend at all). GET /tasks is
+  // already scoped to "my tasks" for an employee by the JWT, same real
+  // source MyTasksView.tsx uses, so this can never drift from what the
+  // employee actually sees there. Task Productivity intentionally stays a
+  // separate, independently displayed metric from productivityScore above
+  // (the unified Overall Productivity formula) - this effect only feeds
+  // the Tasks Completed card, not the productivity percentage.
+  useEffect(() => {
+    // No separate "isAuthenticated" flag exists in this context (that
+    // lives in dashboard.tsx) - gating on role alone is enough here,
+    // since an unauthenticated apiService.getTasks() call just fails
+    // gracefully below (caught, no state corruption) and the 30s retry
+    // picks up real data as soon as a real login sets a real token.
+    if (state.user.role !== 'EMPLOYEE') return;
+
+    const fetchTaskCounts = async () => {
+      try {
+        const result: any = await apiService.getTasks();
+        const list: any[] = Array.isArray(result) ? result : result?.data || [];
+        const completed = list.filter((t) => t.status === 'COMPLETED').length;
+        setState((prev: typeof state) => ({
+          ...prev,
+          metrics: {
+            ...prev.metrics,
+            completedTasks: completed,
+            totalTasksAssigned: list.length,
+          },
+        }));
+      } catch (e) {
+        console.warn('[EmployeeContext] Failed to fetch task counts:', e);
+      }
+    };
+
+    fetchTaskCounts();
+    const interval = setInterval(fetchTaskCounts, 30000);
+    return () => clearInterval(interval);
+  }, [state.user.role]);
+
+  // Weekly Productivity Breakdown chart data - was previously only ever
+  // updated locally (one weekday cell set to the current session's
+  // elapsedSeconds on checkout), so it never reflected real historical
+  // hours and the This Week/Last Week/This Month buttons above it did
+  // nothing at all. Now sourced from the same real
+  // /api/reports/attendance rows ReportsView.tsx's PDF export uses,
+  // filtered to this employee and bucketed per the selected timeframe.
+  const fetchWeeklyHoursData = async (
+    timeframe: 'This Week' | 'Last Week' | 'This Month' = 'This Week'
+  ) => {
+    if (!productivityEmployeeId) return;
+
+    try {
+      let buckets: { label: string; start: Date; end: Date }[];
+
+      if (timeframe === 'This Month') {
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        buckets = [];
+        let bucketStart = new Date(monthStart);
+        let weekNum = 1;
+        while (bucketStart <= monthEnd) {
+          const bucketEnd = new Date(bucketStart);
+          bucketEnd.setDate(bucketEnd.getDate() + 6);
+          const clampedEnd = bucketEnd > monthEnd ? monthEnd : bucketEnd;
+          buckets.push({ label: `Wk ${weekNum}`, start: new Date(bucketStart), end: new Date(clampedEnd) });
+          bucketStart = new Date(clampedEnd);
+          bucketStart.setDate(bucketStart.getDate() + 1);
+          weekNum++;
+        }
+      } else {
+        const now = new Date();
+        const dow = now.getDay(); // 0=Sun..6=Sat
+        const diffToMonday = dow === 0 ? -6 : 1 - dow;
+        const monday = new Date(now);
+        monday.setHours(0, 0, 0, 0);
+        monday.setDate(now.getDate() + diffToMonday + (timeframe === 'Last Week' ? -7 : 0));
+
+        const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+        buckets = weekdayLabels.map((label, i) => {
+          const d = new Date(monday);
+          d.setDate(d.getDate() + i);
+          return { label, start: d, end: d };
+        });
       }
 
-      const taskCompletionRate = total > 0 ? nextCompleted / total : 0;
-      const timeEfficiency = Math.min(prev.metrics.activeTimeSeconds / prev.metrics.targetHoursSeconds, 1);
-      const calcProductivity = Math.round(((timeEfficiency * 0.5) + (taskCompletionRate * 0.5)) * 100);
+      const rangeStart = toDateStr(buckets[0].start);
+      const rangeEnd = toDateStr(buckets[buckets.length - 1].end);
+      const report = await productivityApiService.getAttendanceReport(rangeStart, rangeEnd);
+      const rows = (report?.rows || []).filter((r) => r.employeeId === productivityEmployeeId);
 
-      return {
-        ...prev,
-        metrics: {
-          ...prev.metrics,
-          completedTasks: nextCompleted,
-          productivityScore: calcProductivity,
-        }
-      };
-    });
+      const newData: DayHours[] = buckets.map((b) => {
+        const startStr = toDateStr(b.start);
+        const endStr = toDateStr(b.end);
+        const totalSeconds = rows
+          .filter((r) => r.date >= startStr && r.date <= endStr)
+          .reduce((sum, r) => sum + (r.shiftDurationSeconds || 0), 0);
+        return { day: b.label, hours: Number((totalSeconds / 3600).toFixed(1)) };
+      });
+
+      setState((prev: typeof state) => ({ ...prev, weeklyHoursData: newData }));
+    } catch (e) {
+      console.warn('[EmployeeContext] Failed to fetch weekly hours data:', e);
+    }
   };
+
+  useEffect(() => {
+    if (!productivityEmployeeId) return;
+    fetchWeeklyHoursData('This Week');
+  }, [productivityEmployeeId]);
+
+  // "This Month" card (ThisMonthWidget) - was previously computed from
+  // attendanceHistory, a browser-local list that only ever grew when THIS
+  // session ran a checkout, never reflecting the employee's real backend
+  // attendance record (and mislabeled "This Month" while actually covering
+  // all-time local history). Sourced from the same real
+  // /api/reports/attendance rows as the weekly chart above, scoped to the
+  // 1st of the current month through today.
+  //
+  // DailyReportRow only distinguishes PRESENT/ABSENT (no backend concept
+  // of "Late" or "Leave" exists yet - no shift-start-time config to judge
+  // lateness against), so those two stay honestly 0 rather than invented.
+  const fetchMonthlyAttendanceSummary = async () => {
+    if (!productivityEmployeeId) return;
+
+    try {
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const report = await productivityApiService.getAttendanceReport(toDateStr(monthStart), toDateStr(now));
+      const rows = (report?.rows || []).filter((r) => r.employeeId === productivityEmployeeId);
+
+      const presentDays = rows.filter((r) => r.attendanceStatus === 'PRESENT').length;
+      const absentDays = rows.filter((r) => r.attendanceStatus === 'ABSENT').length;
+
+      setState((prev: typeof state) => ({
+        ...prev,
+        monthlyAttendanceSummary: {
+          presentDays,
+          lateDays: 0,
+          absentDays,
+          leaveDays: 0,
+          totalDaysElapsed: rows.length,
+        },
+      }));
+    } catch (e) {
+      console.warn('[EmployeeContext] Failed to fetch monthly attendance summary:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (!productivityEmployeeId) return;
+    fetchMonthlyAttendanceSummary();
+  }, [productivityEmployeeId]);
+
+  // Attendance History table (AttendanceHistoryTable) - was previously
+  // only ever appended to locally on checkout in THIS browser session, so
+  // it never showed real check-in/out times recorded by the backend, lost
+  // everything on a cleared/different device, and never grew on its own
+  // as new days passed without a manual checkout. Sourced from the same
+  // real /api/reports/attendance rows as the other cards above, over a
+  // rolling 30-day window, refreshed on load, after every checkout, and
+  // on a 1-minute interval so a new day's row (even an ABSENT one) shows
+  // up without requiring a checkout to trigger it.
+  const fetchAttendanceHistory = async () => {
+    if (!productivityEmployeeId) return;
+
+    try {
+      const now = new Date();
+      const rangeStart = new Date(now);
+      rangeStart.setDate(rangeStart.getDate() - 29);
+      const report = await productivityApiService.getAttendanceReport(toDateStr(rangeStart), toDateStr(now));
+      const rows = (report?.rows || [])
+        .filter((r) => r.employeeId === productivityEmployeeId)
+        .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+      const formatTime = (iso: string | null) =>
+        iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
+
+      const history: AttendanceRecordItem[] = rows.map((r) => {
+        const hrs = Math.floor(r.shiftDurationSeconds / 3600);
+        const mins = Math.floor((r.shiftDurationSeconds % 3600) / 60);
+        return {
+          id: `att-${r.date}`,
+          date: r.date,
+          checkIn: formatTime(r.checkInAt),
+          checkOut: r.stillCheckedIn ? 'Still Checked In' : formatTime(r.checkOutAt),
+          break: `${Math.floor(r.breakSeconds / 60)}m`,
+          totalHours: `${hrs}h ${mins}m`,
+          status: r.attendanceStatus === 'PRESENT' ? 'Present' : 'Absent',
+        };
+      });
+
+      const totalDays = rows.length;
+      const presentDays = rows.filter((r) => r.attendanceStatus === 'PRESENT').length;
+      const calcAttendanceRate = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 0;
+
+      setState((prev: typeof state) => ({
+        ...prev,
+        attendanceHistory: history,
+        metrics: { ...prev.metrics, attendanceRate: calcAttendanceRate },
+      }));
+    } catch (e) {
+      console.warn('[EmployeeContext] Failed to fetch attendance history:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (!productivityEmployeeId) return;
+    fetchAttendanceHistory();
+    const interval = setInterval(fetchAttendanceHistory, 60000);
+    return () => clearInterval(interval);
+  }, [productivityEmployeeId]);
 
   // Register New Employee or Manager
   const registerNewEmployee = async (
@@ -809,7 +913,8 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     email: string,
     role: 'EMPLOYEE' | 'MANAGER' = 'EMPLOYEE',
     password: string = 'Taqu7777',
-    department?: string
+    department?: string,
+    designation?: string
   ) => {
     const cleanFirstName = firstName.trim();
     const cleanLastName = lastName.trim();
@@ -826,6 +931,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           organizationName: 'StitchMonitor Corp',
           role: role === 'MANAGER' ? 'ADMIN' : 'EMPLOYEE',
           departmentName: department,
+          designation: designation || undefined,
         }),
       });
 
@@ -879,6 +985,12 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         // previously discarded here, so every JwtAuthGuard-protected
         // endpoint was unreachable from this app.
         apiService.setToken(tokens.accessToken);
+        // The socket may already be connected (unauthenticated, or with a
+        // stale token) from before this login finished - reconnect now so
+        // the server can join this session to the right notification
+        // room (admin-shared vs this-user-only) using the fresh token,
+        // rather than waiting for a later reconnect/app-restart.
+        socketService.reauthenticate();
       }
 
       const canAccessManagerDashboard = u.role === 'ADMIN' || u.role === 'MANAGER';
@@ -893,6 +1005,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         name: fullName,
         email: u.email,
         role: isManagerAccount ? 'MANAGER' : 'EMPLOYEE',
+        designation: u.designation || undefined,
         avatar: getInitials(fullName),
       };
 
@@ -918,12 +1031,13 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         sessionHistory: state.sessionHistory,
         screenshots: state.screenshots,
         weeklyHoursData: state.weeklyHoursData,
+        fetchWeeklyHoursData,
+        monthlyAttendanceSummary: state.monthlyAttendanceSummary,
         productivityEmployeeId,
         setProductivityEmployeeId,
         handleCheckIn,
         handleCheckOut,
         handleToggleBreak,
-        handleCompleteTask,
         registerNewEmployee,
         loginEmployee,
       }}

@@ -9,39 +9,16 @@ interface AttendanceCategory {
 }
 
 export const ThisMonthWidget: React.FC = () => {
-  const { attendanceHistory } = useEmployee();
+  const { monthlyAttendanceSummary } = useEmployee();
+  const { presentDays, lateDays, absentDays, leaveDays, totalDaysElapsed } = monthlyAttendanceSummary;
 
-  const totalLogs = attendanceHistory.length;
-  const presentCount = attendanceHistory.filter(a => a.status === 'Present').length;
-  const lateCount = attendanceHistory.filter(a => a.status === 'Late').length;
-  const absentCount = attendanceHistory.filter(a => a.status === 'Absent').length;
-  const leaveCount = attendanceHistory.filter(a => a.status === 'Leave' || a.status === 'Holiday').length;
+  const pct = (n: number) => (totalDaysElapsed > 0 ? Math.round((n / totalDaysElapsed) * 100) : 0);
 
   const stats: AttendanceCategory[] = [
-    { 
-      label: 'Present', 
-      days: presentCount, 
-      percentage: totalLogs > 0 ? Math.round((presentCount / totalLogs) * 100) : 0, 
-      color: 'bg-emerald-500' 
-    },
-    { 
-      label: 'Late', 
-      days: lateCount, 
-      percentage: totalLogs > 0 ? Math.round((lateCount / totalLogs) * 100) : 0, 
-      color: 'bg-amber-500' 
-    },
-    { 
-      label: 'Absent', 
-      days: absentCount, 
-      percentage: totalLogs > 0 ? Math.round((absentCount / totalLogs) * 100) : 0, 
-      color: 'bg-rose-500' 
-    },
-    { 
-      label: 'Leaves', 
-      days: leaveCount, 
-      percentage: totalLogs > 0 ? Math.round((leaveCount / totalLogs) * 100) : 0, 
-      color: 'bg-indigo-500' 
-    },
+    { label: 'Present', days: presentDays, percentage: pct(presentDays), color: 'bg-emerald-500' },
+    { label: 'Late', days: lateDays, percentage: pct(lateDays), color: 'bg-amber-500' },
+    { label: 'Absent', days: absentDays, percentage: pct(absentDays), color: 'bg-rose-500' },
+    { label: 'Leaves', days: leaveDays, percentage: pct(leaveDays), color: 'bg-indigo-500' },
   ];
 
   return (

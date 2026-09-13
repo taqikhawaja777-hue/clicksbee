@@ -20,9 +20,6 @@ import {
   Activity,
   Target,
   HelpCircle,
-  ShieldAlert,
-  CheckCircle2,
-  Filter,
   Play,
   Pause,
   CheckSquare,
@@ -41,10 +38,13 @@ import { IdleTimeView } from './IdleTimeView';
 import { AuthScreen } from './AuthScreen';
 import { ManagerDashboard } from './ManagerDashboard';
 import { ManagerAttendanceView } from './ManagerAttendanceView';
+import { ManagerProductivityView } from './ManagerProductivityView';
 import { LiveMonitorView } from './LiveMonitorView';
 import { ReportsView } from './ReportsView';
-import { ManagerNotificationsView } from './ManagerNotificationsView';
+import { NotificationsPageView } from './NotificationsPageView';
 import { ManagerSettingsView } from './ManagerSettingsView';
+import { EmployeeSettingsView } from './EmployeeSettingsView';
+import { NotificationBell } from './NotificationBell';
 import { ConsentModal } from './ConsentModal';
 import { CameraConsentModal } from './CameraConsentModal';
 import { MonitoringBanner } from './MonitoringBanner';
@@ -55,24 +55,15 @@ import { useEmployee } from './EmployeeContext';
 import { apiService } from './src/services/api.service';
 import { productivityApiService } from './src/services/productivityApi.service';
 
-interface ActivityItem {
-  id: string;
-  user: string;
-  action: string;
-  time: string;
-  category: 'productive' | 'unproductive' | 'neutral';
-  app: string;
-}
-
 export const AdminDashboard: React.FC = () => {
   const {
     user,
     session,
     metrics,
     weeklyHoursData,
+    fetchWeeklyHoursData,
     handleCheckIn,
     handleCheckOut,
-    handleCompleteTask,
     setProductivityEmployeeId: setContextProductivityEmployeeId,
   } = useEmployee();
 
@@ -101,7 +92,6 @@ export const AdminDashboard: React.FC = () => {
   const [pausedSeconds, setPausedSeconds] = useState<number>(0);
   const [activeNav, setActiveNav] = useState<string>('Dashboard');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
-  const [showNotifications, setShowNotifications] = useState<boolean>(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedTimeframe, setSelectedTimeframe] = useState<'This Week' | 'Last Week' | 'This Month'>('This Week');
@@ -257,33 +247,35 @@ export const AdminDashboard: React.FC = () => {
         { name: 'Screenshots', icon: Camera },
         { name: 'Idle Time', icon: Activity },
         { name: 'Reports', icon: FileText },
-        { name: 'Notifications', icon: Bell, badge: '5', badgeColor: 'bg-indigo-600 text-white' },
+        { name: 'Notifications', icon: Bell },
         { name: 'Settings', icon: Settings },
       ]
     : [
+        // Productivity / Task Productivity / Screenshots / Idle Time are
+        // admin-only monitoring views (they show cross-employee/analytics
+        // data meant for managers reviewing staff, not an employee's own
+        // portal) - intentionally excluded here, still present above in
+        // the MANAGER nav.
         { name: 'Dashboard', icon: LayoutDashboard },
         { name: 'Attendance', icon: Clock },
         { name: 'Work Session', icon: Monitor },
         { name: 'My Tasks', icon: CheckSquare },
-        { name: 'Productivity', icon: TrendingUp },
-        { name: 'Task Productivity', icon: ClipboardList },
-        { name: 'Screenshots', icon: Camera },
-        { name: 'Idle Time', icon: Activity },
+        // SM/HR designations get this one extra admin-style view on top of
+        // the regular employee nav (per explicit request) - everyone else
+        // with an employee-tier designation (CSR, Team Lead, or none) does
+        // not.
+        ...(user.designation === 'SM' || user.designation === 'HR'
+          ? [{ name: 'Idle Time', icon: Activity }]
+          : []),
+        { name: 'Notifications', icon: Bell },
+        // Plain "Employee" (or no designation at all) doesn't get the
+        // Settings page (Admin PC IP config for screenshot uploads) -
+        // HR/CSR/SM/Team Lead keep it, same category split as the
+        // Notifications page's Send Message composer.
+        ...(['HR', 'CSR', 'SM', 'Team Lead'].includes(user.designation || '')
+          ? [{ name: 'Settings', icon: Settings }]
+          : []),
       ];
-
-  const recentActivities: ActivityItem[] = [
-    { id: '1', user: user.name || 'John Doe', action: 'Active editing in Figma', time: '2 mins ago', category: 'productive', app: 'Figma' },
-    { id: '2', user: 'Sarah Smith', action: 'Code review PR #142', time: '12 mins ago', category: 'productive', app: 'VS Code' },
-    { id: '3', user: 'Michael Brown', action: 'Visited YouTube.com', time: '25 mins ago', category: 'unproductive', app: 'Chrome' },
-    { id: '4', user: 'Emily Davis', action: 'Zoom Team Standup', time: '40 mins ago', category: 'neutral', app: 'Zoom' },
-    { id: '5', user: 'Alex Wilson', action: 'Pushed commit to backend repository', time: '1 hour ago', category: 'productive', app: 'Git' }
-  ];
-
-  const filteredActivities = recentActivities.filter(item => 
-    item.user.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.action.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.app.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   return (
     <div className={`flex h-screen w-screen font-sans overflow-hidden select-none transition-colors duration-200 ${
@@ -442,48 +434,11 @@ export const AdminDashboard: React.FC = () => {
               {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
 
-            {/* Notification Bell */}
-            <div className="relative">
-              <button 
-                onClick={() => setShowNotifications(!showNotifications)}
-                className={`p-2.5 rounded-full relative transition-colors ${
-                  isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <Bell className="w-4 h-4" />
-                <span className="absolute top-0 right-0 w-4 h-4 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900">
-                  3
-                </span>
-              </button>
-
-              {/* Notifications Dropdown Tray */}
-              {showNotifications && (
-                <div className={`absolute right-0 mt-3 w-80 rounded-2xl shadow-2xl border p-4 z-50 transition-all ${
-                  isDarkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-800'
-                }`}>
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-200/50 dark:border-slate-800">
-                    <h3 className="font-bold text-sm">Notifications</h3>
-                    <span className="text-xs text-indigo-500 font-semibold cursor-pointer">Mark all as read</span>
-                  </div>
-                  <div className="mt-3 space-y-3">
-                    <div className="flex items-start space-x-3 p-2 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/30">
-                      <ShieldAlert className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
-                      <div>
-                        <p className="text-xs font-semibold">Idle limit exceeded</p>
-                        <p className="text-[11px] text-slate-400">User Michael Brown reached 20m idle time.</p>
-                      </div>
-                    </div>
-                    <div className="flex items-start space-x-3 p-2 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
-                      <div>
-                        <p className="text-xs font-semibold">Daily Backup Completed</p>
-                        <p className="text-[11px] text-slate-400">System database backed up successfully.</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* Notification Bell - real, backend-scoped data (see
+                NotificationBell.tsx); shared by both the Manager and
+                Employee Portals, each seeing only what the backend's
+                role-scoped query returns for their own JWT. */}
+            <NotificationBell isDarkMode={isDarkMode} />
 
             {/* Profile Dropdown Badge Header */}
             <div 
@@ -532,10 +487,12 @@ export const AdminDashboard: React.FC = () => {
             <LiveMonitorView />
           ) : user.role === 'MANAGER' && activeNav === 'Attendance' ? (
             <ManagerAttendanceView />
+          ) : user.role === 'MANAGER' && activeNav === 'Productivity' ? (
+            <ManagerProductivityView />
           ) : user.role === 'MANAGER' && activeNav === 'Reports' ? (
             <ReportsView />
-          ) : user.role === 'MANAGER' && activeNav === 'Notifications' ? (
-            <ManagerNotificationsView />
+          ) : activeNav === 'Notifications' ? (
+            <NotificationsPageView />
           ) : user.role === 'MANAGER' && activeNav === 'Settings' ? (
             <ManagerSettingsView />
           ) : user.role === 'MANAGER' && activeNav === 'Create Task' ? (
@@ -631,6 +588,8 @@ export const AdminDashboard: React.FC = () => {
             <ScreenshotsView />
           ) : activeNav === 'Idle Time' ? (
             <IdleTimeView />
+          ) : activeNav === 'Settings' ? (
+            <EmployeeSettingsView />
           ) : (
             /* DEFAULT DASHBOARD VIEW */
             <>
@@ -680,9 +639,6 @@ export const AdminDashboard: React.FC = () => {
                     <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 flex items-center justify-center text-indigo-500">
                       <Clock className="w-6 h-6" />
                     </div>
-                    <span className="text-xs font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-1 rounded-full flex items-center space-x-0.5">
-                      <span>↑ 5%</span>
-                    </span>
                   </div>
                   <div className="mt-4">
                     <p className="text-xs font-medium text-slate-400">Total Hours Today</p>
@@ -699,9 +655,6 @@ export const AdminDashboard: React.FC = () => {
                     <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
                       <TrendingUp className="w-6 h-6" />
                     </div>
-                    <span className="text-xs font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-1 rounded-full flex items-center space-x-0.5">
-                      <span>↑ 8%</span>
-                    </span>
                   </div>
                   <div className="mt-4">
                     <p className="text-xs font-medium text-slate-400">Productivity Score</p>
@@ -718,9 +671,6 @@ export const AdminDashboard: React.FC = () => {
                     <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 flex items-center justify-center text-cyan-500">
                       <Activity className="w-6 h-6" />
                     </div>
-                    <span className="text-xs font-semibold text-rose-500 bg-rose-500/10 px-2 py-1 rounded-full flex items-center space-x-0.5">
-                      <span>↓ 2%</span>
-                    </span>
                   </div>
                   <div className="mt-4">
                     <p className="text-xs font-medium text-slate-400">Active Keyboard/Mouse Time</p>
@@ -738,18 +688,18 @@ export const AdminDashboard: React.FC = () => {
                       <Target className="w-6 h-6" />
                     </div>
                     <button
-                      onClick={handleCompleteTask}
-                      title="Click to complete a task and trigger live productivity recalculation"
+                      onClick={() => setActiveNav('My Tasks')}
+                      title="Go to My Tasks to view and complete your real assigned tasks"
                       className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 bg-indigo-500/10 hover:bg-indigo-500/20 px-2.5 py-1 rounded-full flex items-center space-x-1 transition-all active:scale-95 cursor-pointer"
                     >
                       <CheckSquare className="w-3.5 h-3.5" />
-                      <span>+ Done</span>
+                      <span>View Tasks</span>
                     </button>
                   </div>
                   <div className="mt-4">
                     <p className="text-xs font-medium text-slate-400">Tasks Completed</p>
                     <h3 className={`text-2xl font-bold mt-0.5 ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>
-                      {metrics.completedTasks} / {metrics.totalTasksAssigned || 15}
+                      {metrics.completedTasks} / {metrics.totalTasksAssigned}
                     </h3>
                     <p className="text-xs text-slate-400 mt-1">
                       {metrics.totalTasksAssigned > 0 ? Math.round((metrics.completedTasks / metrics.totalTasksAssigned) * 100) : 0}% completion rate
@@ -770,9 +720,9 @@ export const AdminDashboard: React.FC = () => {
                   </div>
                   <div className="flex items-center space-x-2">
                     {(['This Week', 'Last Week', 'This Month'] as const).map((tf) => (
-                      <button 
+                      <button
                         key={tf}
-                        onClick={() => setSelectedTimeframe(tf)}
+                        onClick={() => { setSelectedTimeframe(tf); fetchWeeklyHoursData(tf); }}
                         className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
                           selectedTimeframe === tf
                             ? 'bg-indigo-600 text-white border-indigo-600'
@@ -789,8 +739,14 @@ export const AdminDashboard: React.FC = () => {
 
                 {/* Custom Reactive SVG Bar Chart */}
                 <div className="h-64 w-full flex items-end justify-between gap-4 pt-6 px-4 pb-2 border-b border-slate-100 dark:border-slate-800">
-                  {weeklyHoursData.map((item) => {
-                    const heightPct = Math.min(100, (item.hours / 10) * 100);
+                  {(() => {
+                    // Scale bar height against the data's own max rather than
+                    // a fixed 10h - This Month buckets sum a whole week's
+                    // hours per bar (up to ~50h), which a daily-only /10
+                    // divisor would clip flat at 100% for every bar.
+                    const maxHours = Math.max(10, ...weeklyHoursData.map((d) => d.hours));
+                    return weeklyHoursData.map((item) => {
+                    const heightPct = Math.min(100, (item.hours / maxHours) * 100);
                     return (
                       <div key={item.day} className="flex-1 flex flex-col items-center h-full justify-end group">
                         <div className="w-full max-w-[56px] bg-slate-100 dark:bg-slate-800 rounded-t-xl overflow-hidden relative transition-all duration-300 group-hover:scale-105" style={{ height: `${heightPct}%` }}>
@@ -804,7 +760,8 @@ export const AdminDashboard: React.FC = () => {
                         </span>
                       </div>
                     );
-                  })}
+                    });
+                  })()}
                 </div>
                 
                 <div className="flex items-center justify-center space-x-6 mt-4 text-xs font-medium">
@@ -822,54 +779,6 @@ export const AdminDashboard: React.FC = () => {
               {/* Attendance Breakdown Box */}
               <div className="w-full">
                 <ThisMonthWidget />
-              </div>
-
-              {/* Activity Feed Table Section */}
-              <div className={`p-6 rounded-2xl border shadow-sm ${
-                isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200/80'
-              }`}>
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className={`font-bold text-lg ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>Real-Time Activity Audit Log</h4>
-                  <button className="flex items-center space-x-1.5 text-xs text-indigo-500 font-semibold hover:underline">
-                    <Filter className="w-3.5 h-3.5" />
-                    <span>Filter Logs</span>
-                  </button>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className={`border-b text-xs font-semibold uppercase tracking-wider ${
-                        isDarkMode ? 'border-slate-800 text-slate-400' : 'border-slate-200 text-slate-500'
-                      }`}>
-                        <th className="pb-3 px-2">Employee</th>
-                        <th className="pb-3 px-2">Application / Action</th>
-                        <th className="pb-3 px-2">Category</th>
-                        <th className="pb-3 px-2 text-right">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {filteredActivities.map((act) => (
-                        <tr key={act.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
-                          <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200">{act.user}</td>
-                          <td className="py-3 px-2 text-slate-600 dark:text-slate-400">{act.action}</td>
-                          <td className="py-3 px-2">
-                            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
-                              act.category === 'productive' 
-                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' 
-                                : act.category === 'unproductive'
-                                  ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
-                                  : 'bg-slate-500/10 text-slate-600 dark:text-slate-400'
-                            }`}>
-                              {act.category}
-                            </span>
-                          </td>
-                          <td className="py-3 px-2 text-right text-xs text-slate-400">{act.time}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
               </div>
             </>
           )}

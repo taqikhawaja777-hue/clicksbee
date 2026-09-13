@@ -1,4 +1,5 @@
 import React from 'react';
+import { useEmployee } from './EmployeeContext';
 
 export interface SummaryItem {
   label: string;
@@ -7,14 +8,27 @@ export interface SummaryItem {
 }
 
 export const MonthlySummaryWidget: React.FC = () => {
-  // Data configuration for monthly summary rows
+  const { monthlyAttendanceSummary } = useEmployee();
+  const { presentDays, lateDays, absentDays, leaveDays, totalDaysElapsed } = monthlyAttendanceSummary;
+
+  // Real calendar days in the current month, so "Working Days" reads as
+  // "how far into the month we are" (e.g. "11 / 30") instead of the old
+  // fixed "14 / 21" that never changed regardless of the actual date.
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  // Data configuration for monthly summary rows - sourced from the same
+  // real /api/reports/attendance rows as the Dashboard's "This Month"
+  // card. Late/Half Day/Leaves stay honestly 0 (no backend concept of
+  // lateness or half-days exists yet) rather than the previous hardcoded
+  // non-zero values.
   const summaryData: SummaryItem[] = [
-    { label: 'Working Days', value: '14 / 21', colorClass: 'text-slate-900 dark:text-white font-bold' },
-    { label: 'Present', value: 10, colorClass: 'text-emerald-500 font-bold' },
-    { label: 'Absent', value: 1, colorClass: 'text-rose-500 font-bold' },
-    { label: 'Late', value: 2, colorClass: 'text-amber-500 font-bold' },
-    { label: 'Half Day', value: 1, colorClass: 'text-cyan-500 font-bold' },
-    { label: 'Leaves', value: 0, colorClass: 'text-indigo-500 font-bold' },
+    { label: 'Working Days', value: `${totalDaysElapsed} / ${daysInMonth}`, colorClass: 'text-slate-900 dark:text-white font-bold' },
+    { label: 'Present', value: presentDays, colorClass: 'text-emerald-500 font-bold' },
+    { label: 'Absent', value: absentDays, colorClass: 'text-rose-500 font-bold' },
+    { label: 'Late', value: lateDays, colorClass: 'text-amber-500 font-bold' },
+    { label: 'Half Day', value: 0, colorClass: 'text-cyan-500 font-bold' },
+    { label: 'Leaves', value: leaveDays, colorClass: 'text-indigo-500 font-bold' },
   ];
 
   return (

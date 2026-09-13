@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     port: int = 8000
 
+    # Where the NestJS backend's notifications bridge lives - check-in/
+    # check-out/idle-alert/etc. events happen here (in productivity_service)
+    # but Socket.IO delivery lives there, so this service POSTs to it
+    # rather than the other way around. See app/services/notify_client.py.
+    notifications_backend_url: str = "http://localhost:3000"
+
     # Jibble sync (optional - the app still runs without these; the sync
     # job and any endpoint that touches Jibble raise a clear error if a
     # request actually needs them and they're unset)

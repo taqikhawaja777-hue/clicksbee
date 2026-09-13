@@ -26,24 +26,12 @@ export interface MonthlyReportPoint {
   rate: number;
 }
 
-const defaultMonthlyData: MonthlyReportPoint[] = [
-  { month: 'Jan', rate: 95 },
-  { month: 'Feb', rate: 92 },
-  { month: 'Mar', rate: 97 },
-  { month: 'Apr', rate: 93 },
-  { month: 'May', rate: 96 },
-  { month: 'Jun', rate: 90 },
-  { month: 'Jul', rate: 94 },
-  { month: 'Aug', rate: 98 },
-  { month: 'Sep', rate: 93 },
-  { month: 'Oct', rate: 96 },
-  { month: 'Nov', rate: 95 },
-  { month: 'Dec', rate: 97 },
-];
+const currentYear = new Date().getFullYear();
 
 export const ReportsView: React.FC = () => {
-  const [chartData, setChartData] = useState<MonthlyReportPoint[]>(defaultMonthlyData);
-  
+  const [chartData, setChartData] = useState<MonthlyReportPoint[]>([]);
+  const [chartLoading, setChartLoading] = useState<boolean>(true);
+
   // Range selection states for the 3 download cards
   const [attendanceRange, setAttendanceRange] = useState<string>('Monthly');
   const [productivityRange, setProductivityRange] = useState<string>('Monthly');
@@ -54,23 +42,55 @@ export const ReportsView: React.FC = () => {
   // being purely synchronous over hardcoded arrays.
   const [downloadingReport, setDownloadingReport] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch('http://localhost:3000/api/v1/reports/attendance-analytics')
-      .then(res => res.json())
-      .then(data => {
-        const list = Array.isArray(data) ? data : (data?.data && Array.isArray(data.data) ? data.data : []);
-        if (list.length > 0) {
-          setChartData(list);
-        }
-      })
-      .catch(e => console.warn('Attendance analytics fetch error:', e));
-  }, []);
-
   /** en-CA gives YYYY-MM-DD directly - avoids the UTC-vs-local date-string
    * bugs this app has hit before by reading the calendar date in the org's
    * fixed reference timezone rather than the machine's own local zone. */
   const formatKarachiDate = (d: Date): string =>
     new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(d);
+
+  useEffect(() => {
+    // Real attendance_status data from productivity_service - the same
+    // source every other real number on this app already uses. The
+    // previous version called a separate, JWT-guarded NestJS endpoint
+    // with no auth header (always 401'd, silently falling back to a
+    // hardcoded mock array), and that endpoint's own server-side fallback
+    // also invented a rate for any month with zero records - which is why
+    // future months (Oct-Dec, which haven't happened yet) showed data at
+    // all. "Year-to-Date" now means exactly that: only January through
+    // the current month, nothing invented for months that haven't
+    // happened or have no real records yet.
+    const now = new Date();
+    const startOfYear = formatKarachiDate(new Date(now.getFullYear(), 0, 1));
+    const today = formatKarachiDate(now);
+
+    setChartLoading(true);
+    productivityApiService
+      .getAttendanceReport(startOfYear, today)
+      .then(({ rows }) => {
+        const byMonth = new Map<string, { present: number; total: number }>();
+        for (const row of rows) {
+          const monthKey = row.date.slice(0, 7); // YYYY-MM
+          const bucket = byMonth.get(monthKey) || { present: 0, total: 0 };
+          bucket.total += 1;
+          if (row.attendanceStatus === 'PRESENT') bucket.present += 1;
+          byMonth.set(monthKey, bucket);
+        }
+
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const points: MonthlyReportPoint[] = [];
+        for (let m = 0; m <= now.getMonth(); m++) {
+          const key = `${now.getFullYear()}-${String(m + 1).padStart(2, '0')}`;
+          const bucket = byMonth.get(key);
+          points.push({
+            month: monthNames[m],
+            rate: bucket && bucket.total > 0 ? Math.round((bucket.present / bucket.total) * 100) : 0,
+          });
+        }
+        setChartData(points);
+      })
+      .catch((e) => console.warn('Attendance analytics fetch error:', e))
+      .finally(() => setChartLoading(false));
+  }, []);
 
   const getDateRangeForPeriod = (period: string): { startDate: string; endDate: string } => {
     const now = new Date();
@@ -208,16 +228,19 @@ export const ReportsView: React.FC = () => {
             <h2 className="text-xl font-extrabold text-slate-900 dark:text-white tracking-tight">
               Attendance Report — Monthly View
             </h2>
-            <p className="text-xs text-slate-400 font-medium mt-0.5">Real-time attendance rate trends queried directly from MongoDB.</p>
+            <p className="text-xs text-slate-400 font-medium mt-0.5">Real attendance rate per month, computed from real check-in records.</p>
           </div>
 
           <div className="flex items-center space-x-2 bg-indigo-50 dark:bg-indigo-950/50 px-3.5 py-1.5 rounded-full border border-indigo-200/60 dark:border-indigo-800/60 text-xs font-bold text-indigo-600 dark:text-indigo-400">
             <Calendar className="w-3.5 h-3.5" />
-            <span>2026 Year-to-Date Analytics</span>
+            <span>{currentYear} Year-to-Date Analytics</span>
           </div>
         </div>
 
         <div className="w-full h-80">
+          {chartLoading && chartData.length === 0 ? (
+            <p className="text-xs text-slate-400 text-center py-24">Loading attendance analytics…</p>
+          ) : (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={chartData} margin={{ top: 10, right: 30, left: -10, bottom: 10 }}>
               <defs>
@@ -267,6 +290,7 @@ export const ReportsView: React.FC = () => {
               />
             </AreaChart>
           </ResponsiveContainer>
+          )}
         </div>
 
       </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Shield, Camera, Clock, Save } from 'lucide-react';
+import { Settings, Shield, Camera, Clock, Save, HardDrive, Wifi } from 'lucide-react';
 import { productivityApiService, Employee } from './src/services/productivityApi.service';
 
 export const ManagerSettingsView: React.FC = () => {
@@ -7,6 +7,74 @@ export const ManagerSettingsView: React.FC = () => {
   const [idleTimeout, setIdleTimeout] = useState<number>(5);
   const [blurScreenshots, setBlurScreenshots] = useState<boolean>(false);
   const [savedMsg, setSavedMsg] = useState<boolean>(false);
+
+  // Local Screenshot Server - real, disk-persisted settings (localSettings.ts
+  // in the Electron main process), unlike the mock fields in the form above.
+  // Replaces the old MongoDB Atlas upload path: employee machines POST
+  // screenshots straight to THIS PC over the LAN, received by
+  // localScreenshotServer.ts and written to screenshotStoragePath.
+  const [localServerPort, setLocalServerPort] = useState<number>(5000);
+  const [screenshotStoragePath, setScreenshotStoragePath] = useState<string>('');
+  const [lanIpAddresses, setLanIpAddresses] = useState<string[]>([]);
+  const [serverRunning, setServerRunning] = useState<boolean>(false);
+  const [localServerLoading, setLocalServerLoading] = useState<boolean>(true);
+  const [localServerSavedMsg, setLocalServerSavedMsg] = useState<boolean>(false);
+
+  const getIpc = () => {
+    if (typeof window === 'undefined' || !(window as any).require) return null;
+    return (window as any).require('electron').ipcRenderer;
+  };
+
+  const refreshLocalServerStatus = async () => {
+    const ipcRenderer = getIpc();
+    if (!ipcRenderer) return;
+    try {
+      const status = await ipcRenderer.invoke('get-local-server-status');
+      setServerRunning(!!status?.running);
+    } catch (e) {
+      console.warn('[ManagerSettingsView] Failed to read local server status:', e);
+    }
+  };
+
+  useEffect(() => {
+    const ipcRenderer = getIpc();
+    if (!ipcRenderer) {
+      setLocalServerLoading(false);
+      return;
+    }
+    ipcRenderer
+      .invoke('get-local-settings')
+      .then(({ settings, lanIpAddresses: ips }: any) => {
+        setLocalServerPort(settings.localServerPort);
+        setScreenshotStoragePath(settings.screenshotStoragePath);
+        setLanIpAddresses(ips || []);
+      })
+      .catch((e: any) => console.warn('[ManagerSettingsView] Failed to load local server settings:', e))
+      .finally(() => setLocalServerLoading(false));
+    refreshLocalServerStatus();
+  }, []);
+
+  const flashLocalServerSaved = () => {
+    setLocalServerSavedMsg(true);
+    setTimeout(() => setLocalServerSavedMsg(false), 2000);
+  };
+
+  const handleSaveLocalServerSettings = async () => {
+    const ipcRenderer = getIpc();
+    if (!ipcRenderer) return;
+    try {
+      await ipcRenderer.invoke('set-local-settings', {
+        localServerPort: Number(localServerPort),
+        screenshotStoragePath,
+      });
+      // Port may have changed - rebind the listener on the new port.
+      await ipcRenderer.invoke('restart-local-screenshot-server', Number(localServerPort));
+      await refreshLocalServerStatus();
+      flashLocalServerSaved();
+    } catch (e) {
+      console.warn('[ManagerSettingsView] Failed to save local server settings:', e);
+    }
+  };
 
   // Camera presence monitoring: real backend-backed toggles (unlike the
   // three fields above, which are local-only mocks today). Team-level
@@ -137,6 +205,100 @@ export const ManagerSettingsView: React.FC = () => {
         </button>
 
       </form>
+
+      {/* Local Screenshot Server — replaces the old MongoDB Atlas upload
+          path. Employee machines POST screenshots straight to this PC's IP
+          over the LAN; received here, written to screenshotStoragePath. */}
+      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 p-8 space-y-6 shadow-sm">
+        <div className="flex items-center justify-between pb-6 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/50 rounded-2xl text-indigo-600">
+              <HardDrive className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-sm text-slate-800 dark:text-white">Local Screenshot Server</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Employee screenshots are received directly by this PC over your local network and stored on disk here - no cloud database involved.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2 shrink-0">
+            {localServerSavedMsg && (
+              <span className="px-3 py-1 bg-emerald-500 text-white font-extrabold text-[11px] rounded-full shadow-sm animate-pulse">
+                Saved
+              </span>
+            )}
+            <span className={`px-3 py-1 font-extrabold text-[11px] rounded-full ${
+              serverRunning
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400'
+                : 'bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400'
+            }`}>
+              {serverRunning ? 'Running' : 'Not Running'}
+            </span>
+          </div>
+        </div>
+
+        {localServerLoading ? (
+          <p className="text-xs text-slate-400">Loading local server settings…</p>
+        ) : (
+          <>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-100 dark:border-slate-800">
+              <div>
+                <h4 className="font-bold text-xs text-slate-800 dark:text-white">This PC's LAN IP Address</h4>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Give this (and the port below) to employees for their "Admin PC IP" setting.
+                </p>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Wifi className="w-4 h-4 text-indigo-500" />
+                <span className="px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-800 dark:text-white font-mono">
+                  {lanIpAddresses.length > 0 ? lanIpAddresses.join(', ') : 'No LAN IP detected'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-100 dark:border-slate-800">
+              <div>
+                <h4 className="font-bold text-xs text-slate-800 dark:text-white">Server Port</h4>
+                <p className="text-xs text-slate-400 mt-0.5">Port this PC listens on for incoming screenshot uploads.</p>
+              </div>
+              <input
+                type="number"
+                min={1024}
+                max={65535}
+                value={localServerPort}
+                onChange={(e) => setLocalServerPort(Number(e.target.value))}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-800 dark:text-white focus:outline-none w-28"
+              />
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4">
+              <div>
+                <h4 className="font-bold text-xs text-slate-800 dark:text-white">Storage Folder</h4>
+                <p className="text-xs text-slate-400 mt-0.5">Where received screenshots are saved on this PC (organized by employee, then date).</p>
+              </div>
+              <input
+                type="text"
+                value={screenshotStoragePath}
+                onChange={(e) => setScreenshotStoragePath(e.target.value)}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-800 dark:text-white focus:outline-none w-full sm:w-80 font-mono"
+              />
+            </div>
+
+            <button
+              onClick={handleSaveLocalServerSettings}
+              className="px-6 py-3 bg-[#534bf3] text-white font-bold text-xs rounded-xl flex items-center space-x-2 shadow-md hover:bg-indigo-700 transition-all cursor-pointer"
+            >
+              <Save className="w-4 h-4" />
+              <span>Save & Restart Local Server</span>
+            </button>
+
+            <p className="text-[11px] text-slate-400 pt-2">
+              Screenshots older than 24 hours are deleted automatically from this folder every hour.
+            </p>
+          </>
+        )}
+      </div>
 
       {/* Camera Presence Monitoring — real backend-backed toggles, saved
           immediately on change (unlike the mock fields in the form above) */}

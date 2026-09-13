@@ -2,6 +2,7 @@
  * Socket Service — Socket.IO client singleton for /monitor namespace
  */
 import { io, Socket } from 'socket.io-client';
+import { apiService } from './api.service';
 
 const SOCKET_URL = 'http://localhost:3000';
 
@@ -18,11 +19,17 @@ class SocketService {
       return this.socket;
     }
 
+    // Sends the current JWT (if logged in) so MonitorGateway can verify who
+    // this is and join it to the right notification room (the shared
+    // admin room, or this user's own personal room) server-side - a client
+    // can't just claim to be a manager or a different employee to see
+    // notifications that aren't theirs.
     this.socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 2000,
+      auth: { token: apiService.getToken() },
     });
 
     this.socket.on('connect', () => {
@@ -42,6 +49,21 @@ class SocketService {
     });
 
     return this.socket;
+  }
+
+  /**
+   * Reconnect with the just-obtained JWT - the socket may already have
+   * connected (with no/stale token) before login finished, and Socket.IO
+   * doesn't let you change a connection's auth payload after the fact, so
+   * a full disconnect+reconnect is the only way to pick up a fresh token.
+   * Call this right after a successful login.
+   */
+  reauthenticate(): void {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    this.connect();
   }
 
   /**

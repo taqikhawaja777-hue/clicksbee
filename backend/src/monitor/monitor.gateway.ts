@@ -9,6 +9,8 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 
 @WebSocketGateway({
   cors: {
@@ -23,8 +25,51 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
   // Track manager subscriptions: socketId -> Set of employeeIds
   private managerSubscriptions: Map<string, Set<string>> = new Map();
 
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+  ) {}
+
+  /**
+   * Every existing feature on this gateway (manager:subscribe,
+   * employee:heartbeat, Live Monitor's broadcastEmployeeUpdate) worked
+   * fully unauthenticated before notifications needed real per-user/
+   * per-org room scoping - preserved below: no token still connects fine,
+   * it just joins no notification rooms. A present-but-invalid/expired
+   * token is treated the SAME as no token (unauthenticated), never
+   * defaulting to a fake manager identity the way the separate, unused
+   * /live namespace's gateway does - that fallback would let any socket
+   * with a broken token read every organization's admin notifications.
+   */
   handleConnection(client: Socket) {
     this.logger.log(`[MonitorGateway] Client connected: ${client.id}`);
+    try {
+      const authHeader = client.handshake.headers?.authorization;
+      const token = client.handshake.auth?.token || (typeof authHeader === 'string' ? authHeader.split(' ')[1] : undefined);
+      if (!token) {
+        client.data.user = null;
+        return;
+      }
+      const secret = this.configService.get<string>('JWT_SECRET') || 'super-secret-jwt-access-key-stitchmonitor-2026';
+      const payload = this.jwtService.verify(token, { secret });
+      client.data.user = payload;
+
+      // Every authenticated user gets their own personal room, for
+      // employee-scoped notifications (and anything else that should
+      // reach exactly one logged-in session).
+      client.join(`user_${payload.sub}`);
+
+      // Admins/managers additionally join their organization's shared
+      // notification room - this is what makes "admin sees notifications
+      // about ALL employees" a single emit rather than one per manager.
+      if (payload.role === 'ADMIN' || payload.role === 'MANAGER') {
+        client.join(`admin_org_${payload.organizationId}`);
+      }
+      this.logger.log(`[MonitorGateway] Authenticated socket ${client.id} as user ${payload.sub} (${payload.role})`);
+    } catch (e) {
+      client.data.user = null;
+      this.logger.warn(`[MonitorGateway] Socket ${client.id} sent an invalid/expired token - connecting unauthenticated`);
+    }
   }
 
   handleDisconnect(client: Socket) {
@@ -175,5 +220,32 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
     this.server.to(`employee:${employeeId}`).emit('employee:status:update', payload);
     this.server.emit(`employee:update:${employeeId}`, payload);
     this.server.emit('live:feed', payload);
+  }
+
+  /**
+   * Pushes one notification row to the correct audience only:
+   * recipientType ADMIN -> every manager/admin currently connected for
+   * this organization (admin_org_${organizationId} room, joined in
+   * handleConnection based on each socket's OWN verified JWT - not
+   * anything the emitting code chooses per-client). recipientType
+   * EMPLOYEE -> only the one user's own personal room (user_${userId}).
+   * A manager can't see another org's admin notifications, and an
+   * employee can't see another employee's, because room membership was
+   * decided server-side from each socket's verified token, never from a
+   * client-supplied id.
+   */
+  public emitNotification(notification: {
+    id: string;
+    organizationId: string;
+    recipientType: 'ADMIN' | 'EMPLOYEE';
+    userId: string | null;
+    [key: string]: any;
+  }): void {
+    if (!this.server) return;
+    const room =
+      notification.recipientType === 'ADMIN'
+        ? `admin_org_${notification.organizationId}`
+        : `user_${notification.userId}`;
+    this.server.to(room).emit('notification:new', notification);
   }
 }

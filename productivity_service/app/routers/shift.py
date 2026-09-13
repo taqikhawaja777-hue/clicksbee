@@ -12,6 +12,7 @@ from ..schemas.shift import (
     TriggerScheduledBreakIn,
 )
 from ..services.productivity import KARACHI_TZ, ProductivityService
+from ..services.notify_client import notify_system_event
 
 router = APIRouter(prefix="/api/shift", tags=["shift"])
 
@@ -60,7 +61,21 @@ def check_in(
     payload: CheckInOut,
     service: ProductivityService = Depends(get_productivity_service),
 ) -> ShiftEventOut:
-    return ShiftEventOut(**service.log_check_in(payload.employee_id))
+    event = service.log_check_in(payload.employee_id)
+
+    employee = service.get_employee(payload.employee_id)
+    if employee:
+        now_str = datetime.now(KARACHI_TZ).strftime("%I:%M %p").lstrip("0")
+        notify_system_event(
+            employee_email=employee.get("email"),
+            notification_type="CHECK_IN",
+            admin_title="Employee Checked In",
+            admin_message=f"{employee.get('full_name')} checked in at {now_str}",
+            employee_title="Checked In",
+            employee_message="You checked in successfully",
+        )
+
+    return ShiftEventOut(**event)
 
 
 @router.post("/check-out", response_model=ShiftEventOut, status_code=201)
@@ -68,7 +83,26 @@ def check_out(
     payload: CheckInOut,
     service: ProductivityService = Depends(get_productivity_service),
 ) -> ShiftEventOut:
-    return ShiftEventOut(**service.log_check_out(payload.employee_id))
+    event = service.log_check_out(payload.employee_id)
+
+    employee = service.get_employee(payload.employee_id)
+    if employee:
+        now = datetime.now(KARACHI_TZ)
+        now_str = now.strftime("%I:%M %p").lstrip("0")
+        summary = service.get_shift_summary(payload.employee_id, now.date())
+        total_seconds = summary.get("shift_duration_seconds", 0)
+        hours, minutes = divmod(total_seconds // 60, 60)
+        duration_str = f"{hours}h {minutes}m"
+        notify_system_event(
+            employee_email=employee.get("email"),
+            notification_type="CHECK_OUT",
+            admin_title="Employee Checked Out",
+            admin_message=f"{employee.get('full_name')} checked out at {now_str} — Total hours: {duration_str}",
+            employee_title="Checked Out",
+            employee_message=f"You checked out successfully — Total hours today: {duration_str}",
+        )
+
+    return ShiftEventOut(**event)
 
 
 @router.post("/break/start", response_model=ShiftEventOut, status_code=201)

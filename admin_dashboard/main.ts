@@ -3,6 +3,9 @@ import path from 'path';
 import { registerCaptureIpcHandlers } from './captureService';
 import { registerProductivityCaptureIpcHandlers } from './productivityCapture';
 import { registerIdleTimeTrackerIpcHandlers } from './idleTimeTracker';
+import { registerLocalSettingsIpcHandlers } from './localSettings';
+import { registerLocalScreenshotServerIpcHandlers, startLocalScreenshotServer } from './localScreenshotServer';
+import { startScreenshotCleanupSweep } from './screenshotCleanup';
 
 function createWindow() {
   const mainWindow = new BrowserWindow({
@@ -57,6 +60,16 @@ app.whenReady().then(() => {
   registerCaptureIpcHandlers();
   registerProductivityCaptureIpcHandlers();
   registerIdleTimeTrackerIpcHandlers();
+  registerLocalSettingsIpcHandlers();
+  registerLocalScreenshotServerIpcHandlers();
+
+  // Local-network screenshot receiver + its daily cleanup sweep - runs on
+  // every install regardless of role (harmless if nobody ever POSTs to it
+  // on an employee's machine; a manager's machine is exactly where this
+  // needs to be listening). Replaces the old MongoDB Atlas upload path.
+  startLocalScreenshotServer();
+  startScreenshotCleanupSweep();
+
   createWindow();
 });
 

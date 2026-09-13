@@ -12,11 +12,12 @@ actual clock time.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from ..db import get_supabase_client
-from ..services.productivity import KARACHI_TZ, ProductivityService
+from ..services.productivity import KARACHI_TZ, ProductivityService, _parse_iso
+from ..services.notify_client import notify_system_event
 
 logger = logging.getLogger("scheduled_breaks")
 
@@ -80,3 +81,58 @@ def end_scheduled_break(break_key: str) -> dict:
 
     logger.info("Scheduled break END %s for %d employee(s)", break_key, len(ended))
     return {"break_key": break_key, "action": "end", "employee_ids": ended}
+
+
+def check_late_returns(break_key: str) -> dict:
+    """Runs GRACE_PERIOD_SECONDS after a scheduled break's own end-time cron
+    (registered in app.main's start_scheduler alongside the start/end jobs
+    for the same window). For each employee whose LATEST shift event is
+    still that exact scheduled break_end (i.e. they haven't started
+    another break or checked out since - either is a legitimate reason to
+    skip this check, not a violation), checks whether any presence_logs
+    row landed in [break_end, break_end + grace] showing confirmed-active
+    status. Reuses ProductivityService._compute_compliance_score() - the
+    SAME check that formula uses for its late-return penalty - rather than
+    re-implementing the "is this a late return" logic a second time."""
+    service = ProductivityService(get_supabase_client())
+    config = service.get_productivity_config()
+    grace_seconds = config["break_grace_period_seconds"]
+    now = datetime.now(timezone.utc)
+
+    notified = []
+    for employee in service.list_employees():
+        employee_id = UUID(employee["id"])
+        latest = service.get_latest_shift_event(employee_id, before=now)
+        if not (
+            latest
+            and latest["event_type"] == "break_end"
+            and latest.get("triggered_by") == "scheduled"
+            and latest.get("break_type") == break_key
+        ):
+            continue
+
+        break_end_at = _parse_iso(latest["occurred_at"])
+        window_end = break_end_at + timedelta(seconds=grace_seconds)
+        presence_rows = (
+            service.client.table("presence_logs")
+            .select("*")
+            .eq("employee_id", str(employee_id))
+            .gte("occurred_at", break_end_at.isoformat())
+            .lte("occurred_at", window_end.isoformat())
+            .execute()
+        ).data or []
+
+        _, breakdown = ProductivityService._compute_compliance_score(0, [latest], presence_rows, config)
+        if breakdown["lateReturnCount"] > 0:
+            window_label = next((w["label"] for w in BREAK_WINDOWS if w["key"] == break_key), break_key)
+            notify_system_event(
+                employee_email=employee.get("email"),
+                notification_type="LATE_BREAK_RETURN",
+                admin_title="Late Return From Break",
+                admin_message=f"{employee.get('full_name')} has not returned from their {window_label} break {grace_seconds // 60}+ minutes after it ended",
+            )
+            notified.append(employee["id"])
+
+    if notified:
+        logger.info("Late-return check for %s: notified %d employee(s)", break_key, len(notified))
+    return {"break_key": break_key, "action": "check_late_returns", "employee_ids": notified}

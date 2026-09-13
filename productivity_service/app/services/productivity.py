@@ -10,6 +10,7 @@ from ..schemas.activity import ActivityEventIn
 from ..schemas.idle_time import IdleTimeLogIn
 from ..schemas.presence import PresenceLogIn
 from .jibble_client import _pick
+from .notify_client import notify_system_event
 
 logger = logging.getLogger("productivity_service")
 
@@ -41,6 +42,26 @@ PRESENCE_POLL_INTERVAL_SECONDS = 15
 # desk. Only affects the `status` string returned by get_shift_summary -
 # it never touches idle_seconds/active_seconds themselves.
 GRACE_PERIOD_SECONDS = 120
+
+# Fallback values for the Overall Productivity formula's weights/thresholds
+# when the productivity_config table row can't be read (migration
+# 008_overall_productivity.sql not applied yet, or a transient Supabase
+# error) - mirrors that migration's column defaults exactly, so behavior is
+# identical whether the row exists or not. See get_productivity_config().
+DEFAULT_PRODUCTIVITY_CONFIG = {
+    "attendance_weight": 40.0,
+    "app_focus_weight": 30.0,
+    "compliance_weight": 30.0,
+    "call_efficiency_weight": 0.0,
+    "idle_penalty_threshold_seconds": 1800,
+    "idle_penalty_points_per_minute": 1.0,
+    "idle_penalty_max_points": 40.0,
+    "break_grace_period_seconds": 120,
+    "late_return_penalty_points": 10.0,
+    "washroom_daily_limit": 3,
+    "washroom_minutes_limit": 4.0,
+    "washroom_penalty_points": 5.0,
+}
 
 # How fresh the latest presence_logs sample must be to drive the
 # camera-aware status shown on "Today, per employee" - checked/refreshed
@@ -661,6 +682,21 @@ class ProductivityService:
             .insert({"employee_id": str(employee_id), "consented": consented})
             .execute()
         )
+
+        if not consented:
+            # A decline is a real, discrete, single-fire event worth an
+            # admin alert - unlike (e.g.) "presence checks stopped
+            # arriving," which would need a genuinely new polling/timeout
+            # mechanism to detect and isn't built here.
+            employee = self.get_employee(employee_id)
+            if employee:
+                notify_system_event(
+                    employee_email=employee.get("email"),
+                    notification_type="CAMERA_ANOMALY",
+                    admin_title="Camera Monitoring Consent Declined",
+                    admin_message=f"{employee.get('full_name')} declined camera presence monitoring consent",
+                )
+
         return resp.data[0]
 
     def has_active_camera_consent(self, employee_id: UUID) -> bool:
@@ -915,11 +951,45 @@ class ProductivityService:
         schedule_key: str | None = None,
         occurred_at: datetime | None = None,
     ) -> dict:
-        return self._insert_shift_event(
+        event = self._insert_shift_event(
             employee_id, "break_start", break_type=break_type,
             triggered_by=triggered_by, label=label, schedule_key=schedule_key,
             occurred_at=occurred_at,
         )
+
+        # Washroom-limit check - no UI creates break_type='WASHROOM' events
+        # yet (same as the Overall Productivity formula's washroom penalty),
+        # so this never fires in practice today, but is correct and ready
+        # the moment such a button exists, since start_break() is the one
+        # choke point every break (scheduled, manual, or washroom) goes
+        # through.
+        if break_type == "WASHROOM":
+            now = occurred_at or datetime.now(timezone.utc)
+            today_local = now.astimezone(KARACHI_TZ).date()
+            day_start = datetime.combine(today_local, time.min, tzinfo=KARACHI_TZ)
+            day_end = datetime.combine(today_local, time.max, tzinfo=KARACHI_TZ)
+            todays_events = (
+                self.client.table("shift_events")
+                .select("*")
+                .eq("employee_id", str(employee_id))
+                .eq("break_type", "WASHROOM")
+                .eq("event_type", "break_start")
+                .gte("occurred_at", day_start.isoformat())
+                .lte("occurred_at", day_end.isoformat())
+                .execute()
+            ).data or []
+            config = self.get_productivity_config()
+            if len(todays_events) >= config["washroom_daily_limit"] + 1:
+                employee = self.get_employee(employee_id)
+                if employee:
+                    notify_system_event(
+                        employee_email=employee.get("email"),
+                        notification_type="WASHROOM_LIMIT",
+                        admin_title="Excessive Washroom Breaks",
+                        admin_message=f"{employee.get('full_name')} has taken {len(todays_events)} washroom breaks today (limit: {config['washroom_daily_limit']})",
+                    )
+
+        return event
 
     def end_break(
         self,
@@ -1021,6 +1091,211 @@ class ProductivityService:
             "last_event": relevant[-1] if relevant else None,
         }
 
+    # ---- overall productivity (unified scoring) -------------------------
+    #
+    # THE single formula used everywhere a "productivity percentage" is
+    # shown - replaces the previously-independent formulas that used to
+    # live inline in get_shift_summary() and _compute_daily_report_row()
+    # (which could disagree with each other) and the frontend's own
+    # EmployeeContext.tsx calcProductivity(). Deliberately excludes call
+    # log/talk time (that integration doesn't exist yet - see
+    # call_efficiency_weight below) and Task Productivity/Groq-Gemini
+    # screenshot analysis, both of which remain their own separate,
+    # independently displayed metrics.
+
+    def get_productivity_config(self) -> dict:
+        """Reads the singleton productivity_config row (weights and
+        compliance thresholds), falling back to DEFAULT_PRODUCTIVITY_CONFIG
+        (identical values to that row's own column defaults) if migration
+        008_overall_productivity.sql hasn't been applied yet or the read
+        fails - same degrade-gracefully pattern used elsewhere in this file
+        for shift_events (migration 005)."""
+        try:
+            rows = self.client.table("productivity_config").select("*").eq("id", 1).execute().data or []
+            if rows:
+                row = rows[0]
+                return {**DEFAULT_PRODUCTIVITY_CONFIG, **{k: v for k, v in row.items() if v is not None}}
+        except Exception:
+            logger.exception(
+                "Failed to read productivity_config - is migration "
+                "008_overall_productivity.sql applied? Falling back to defaults."
+            )
+        return dict(DEFAULT_PRODUCTIVITY_CONFIG)
+
+    def update_productivity_config(self, updates: dict) -> dict:
+        """Partial update of the singleton config row - only fields present
+        in `updates` change. This is the whole point of the table: adjusting
+        weights/thresholds is a data change here, not a code change."""
+        payload = {k: v for k, v in updates.items() if v is not None}
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.client.table("productivity_config").update(payload).eq("id", 1).execute()
+        return self.get_productivity_config()
+
+    @staticmethod
+    def _compute_attendance_ratio(combined_active_seconds: float, shift_duration_seconds: float) -> float:
+        """Attendance Ratio = Combined Active Time / (Total Shift Time -
+        Total Break Time). shift_duration_seconds is already break-adjusted
+        by every caller (get_shift_summary/_compute_daily_report_row both
+        subtract total_break_seconds before this point)."""
+        if shift_duration_seconds <= 0:
+            return 0.0
+        return round(min(100.0, (combined_active_seconds / shift_duration_seconds) * 100), 2)
+
+    @staticmethod
+    def _compute_app_focus_score(jabber_seconds: float, wildix_seconds: float, combined_active_seconds: float) -> float:
+        """App Focus Score = (Cisco Jabber Time + Wildix Time) / Combined
+        Active Time."""
+        if combined_active_seconds <= 0:
+            return 0.0
+        return round(min(100.0, ((jabber_seconds + wildix_seconds) / combined_active_seconds) * 100), 2)
+
+    @staticmethod
+    def _compute_compliance_score(
+        idle_seconds: float,
+        day_events: list[dict],
+        day_presence_rows: list[dict],
+        config: dict,
+    ) -> tuple[float, dict]:
+        """Compliance Score = 100 - penalties for unauthorized idle time
+        beyond the configured threshold, late returns from SCHEDULED breaks
+        beyond the grace period, and washroom breaks exceeding the
+        configured daily count or per-break duration limit. Returns
+        (score, breakdown) so callers can show exactly where points were
+        lost, not just the final number."""
+        idle_threshold = config["idle_penalty_threshold_seconds"]
+        idle_excess_seconds = max(0.0, idle_seconds - idle_threshold)
+        idle_penalty = min(
+            config["idle_penalty_max_points"],
+            (idle_excess_seconds / 60.0) * config["idle_penalty_points_per_minute"],
+        )
+
+        # Late-return-from-scheduled-break: for each scheduled break_end,
+        # check whether ANY presence_logs row in [break_end, break_end +
+        # grace] shows confirmed-active status. No presence data in that
+        # window (employee never enabled camera monitoring, or no checks
+        # landed) means "can't verify" - skipped rather than penalized on a
+        # guess, same philosophy as _camera_aware_status()'s fallback.
+        grace = config["break_grace_period_seconds"]
+        late_return_count = 0
+        sorted_presence = sorted(day_presence_rows, key=lambda r: r["occurred_at"])
+        for event in day_events:
+            if event["event_type"] != "break_end" or event.get("triggered_by") != "scheduled":
+                continue
+            break_end_at = _parse_iso(event["occurred_at"])
+            window_end = break_end_at + timedelta(seconds=grace)
+            window_rows = [
+                r for r in sorted_presence
+                if break_end_at <= _parse_iso(r["occurred_at"]) <= window_end
+            ]
+            if window_rows and not any(r.get("combined_status") == "active" for r in window_rows):
+                late_return_count += 1
+        late_return_penalty = late_return_count * config["late_return_penalty_points"]
+
+        # Washroom breaks: no UI creates break_type='WASHROOM' events yet
+        # (migration 008 just allows the value), so washroom_pairs is
+        # always empty and this contributes 0 penalty in practice until
+        # that button exists - the formula itself is real and ready.
+        washroom_pairs: list[float] = []
+        open_start: dict | None = None
+        for event in day_events:
+            if event.get("break_type") != "WASHROOM":
+                continue
+            if event["event_type"] == "break_start":
+                open_start = event
+            elif event["event_type"] == "break_end" and open_start is not None:
+                duration = (_parse_iso(event["occurred_at"]) - _parse_iso(open_start["occurred_at"])).total_seconds()
+                washroom_pairs.append(duration)
+                open_start = None
+
+        washroom_over_limit_count = max(0, len(washroom_pairs) - config["washroom_daily_limit"])
+        washroom_over_duration_count = sum(
+            1 for d in washroom_pairs if d > config["washroom_minutes_limit"] * 60
+        )
+        washroom_penalty = (washroom_over_limit_count + washroom_over_duration_count) * config["washroom_penalty_points"]
+
+        total_penalty = idle_penalty + late_return_penalty + washroom_penalty
+        score = max(0.0, 100.0 - total_penalty)
+
+        breakdown = {
+            "idlePenaltyPoints": round(idle_penalty, 2),
+            "lateReturnPenaltyPoints": round(late_return_penalty, 2),
+            "washroomPenaltyPoints": round(washroom_penalty, 2),
+            "idleSeconds": round(idle_seconds),
+            "idleThresholdSeconds": idle_threshold,
+            "lateReturnCount": late_return_count,
+            "washroomBreakCount": len(washroom_pairs),
+            "washroomOverLimitCount": washroom_over_limit_count,
+            "washroomOverDurationCount": washroom_over_duration_count,
+        }
+        return round(score, 2), breakdown
+
+    @staticmethod
+    def _weighted_combine(components: dict[str, float], config: dict) -> float:
+        """Overall Productivity = sum(component_score * component_weight /
+        100) for every component currently supplied. Adding a fourth
+        sub-score later (Call Efficiency, once call log integration is
+        built) is: (1) write its own pure _compute_x_score() function,
+        (2) add its key to the `components` dict passed in here,
+        (3) its weight already has a reserved config column
+        (call_efficiency_weight, defaults to 0 today) - no rewrite of this
+        function, its callers, or the config table required. Weights are
+        NOT renormalized when a component is absent - they represent the
+        intended distribution once every component exists, so an absent
+        component (call efficiency today) simply contributes 0 rather than
+        inflating the others."""
+        total = 0.0
+        for key, score in components.items():
+            weight = config.get(f"{key}_weight", 0) or 0
+            total += (score or 0) * (weight / 100.0)
+        return round(total, 2)
+
+    @classmethod
+    def _compute_overall_productivity(
+        cls,
+        combined_active_seconds: float,
+        shift_duration_seconds: float,
+        jabber_seconds: float,
+        wildix_seconds: float,
+        idle_seconds: float,
+        day_events: list[dict],
+        day_presence_rows: list[dict],
+        config: dict,
+    ) -> dict:
+        """THE single Overall Productivity calculation. Every caller
+        (get_shift_summary, _compute_daily_report_row, and therefore every
+        dashboard card/report/table showing a productivity percentage)
+        goes through this one function."""
+        attendance_ratio = cls._compute_attendance_ratio(combined_active_seconds, shift_duration_seconds)
+        app_focus_score = cls._compute_app_focus_score(jabber_seconds, wildix_seconds, combined_active_seconds)
+        compliance_score, compliance_breakdown = cls._compute_compliance_score(
+            idle_seconds, day_events, day_presence_rows, config
+        )
+
+        components = {
+            "attendance": attendance_ratio,
+            "app_focus": app_focus_score,
+            "compliance": compliance_score,
+            # "call_efficiency": intentionally absent - call log/talk time
+            # integration doesn't exist yet. Its weight (call_efficiency_weight)
+            # is reserved in config but contributes nothing until a
+            # _compute_call_efficiency_score() is added here.
+        }
+        overall = cls._weighted_combine(components, config)
+
+        return {
+            "attendance_ratio": attendance_ratio,
+            "app_focus_score": app_focus_score,
+            "compliance_score": compliance_score,
+            "compliance_breakdown": compliance_breakdown,
+            "overall_productivity_percentage": overall,
+            "weights_used": {
+                "attendanceWeight": config["attendance_weight"],
+                "appFocusWeight": config["app_focus_weight"],
+                "complianceWeight": config["compliance_weight"],
+                "callEfficiencyWeight": config["call_efficiency_weight"],
+            },
+        }
+
     def get_shift_summary(self, employee_id: UUID, day: date) -> dict:
         """THE single authoritative calculation for an employee/day: shift
         duration (break-adjusted), active/idle seconds, break seconds,
@@ -1068,12 +1343,52 @@ class ProductivityService:
         baseline_idle = (session_start_event.get("baseline_idle_seconds") or 0) if session_start_event else 0
         active_seconds = max(0, raw_active_seconds - baseline_active)
         idle_seconds = max(0, raw_idle_seconds - baseline_idle)
-        total_logged = active_seconds + idle_seconds
-        productivity_percentage = (
-            round((active_seconds / total_logged) * 100, 2) if total_logged > 0 else 0.0
-        )
 
         presence = self.get_presence_summary(employee_id, day)
+
+        # Overall Productivity uses DAY-CUMULATIVE numbers (not the
+        # baseline-adjusted-since-this-check-in active_seconds/idle_seconds
+        # above, which exist for the "resets on re-checkin" live counters
+        # elsewhere in the UI) - the same day-scoped figures
+        # _compute_daily_report_row() computes for reports, so a live view
+        # and a same-day report row can never disagree on this number
+        # again.
+        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ)
+        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ)
+        try:
+            day_events = (
+                self.client.table("shift_events")
+                .select("*")
+                .eq("employee_id", str(employee_id))
+                .gte("occurred_at", day_start.isoformat())
+                .lte("occurred_at", day_end.isoformat())
+                .order("occurred_at")
+                .execute()
+            ).data or []
+        except Exception:
+            logger.exception(
+                "Failed to query day-scoped shift_events for overall productivity "
+                "(employee %s, day %s) - is migration 005_shift_events.sql applied? "
+                "Treating as no events.",
+                employee_id, day,
+            )
+            day_events = []
+
+        day_presence_rows = (
+            self.client.table("presence_logs")
+            .select("*")
+            .eq("employee_id", str(employee_id))
+            .gte("occurred_at", day_start.isoformat())
+            .lte("occurred_at", day_end.isoformat())
+            .order("occurred_at")
+            .execute()
+        ).data or []
+
+        config = self.get_productivity_config()
+        report_row = self._compute_daily_report_row(
+            day_events, idle_row, presence, employee_id, day, day_presence_rows, config, now=now
+        )
+        productivity_percentage = report_row["productivity_percentage"]
 
         if session_start is None:
             status = "NOT_CHECKED_IN"
@@ -1107,6 +1422,11 @@ class ProductivityService:
             "jabber_seconds": app_focus.get("Cisco Jabber", 0),
             "wildix_seconds": app_focus.get("Wildix", 0),
             "productivity_percentage": productivity_percentage,
+            "attendance_ratio": report_row["attendance_ratio"],
+            "app_focus_score": report_row["app_focus_score"],
+            "compliance_score": report_row["compliance_score"],
+            "compliance_breakdown": report_row["compliance_breakdown"],
+            "weights_used": report_row["weights_used"],
             "status": status,
             "idle_updated_at": idle_row.get("updated_at") if idle_row else None,
             "camera_active_seconds": presence["camera_active_seconds"],
@@ -1140,7 +1460,14 @@ class ProductivityService:
 
     @staticmethod
     def _compute_daily_report_row(
-        events: list[dict], idle_row: dict | None, presence: dict, employee_id: UUID, day: date
+        events: list[dict],
+        idle_row: dict | None,
+        presence: dict,
+        employee_id: UUID,
+        day: date,
+        day_presence_rows: list[dict],
+        config: dict,
+        now: datetime | None = None,
     ) -> dict:
         """Pure computation half of get_daily_report_row() - takes
         already-fetched, already-day-filtered shift_events/idle_time_logs/
@@ -1149,7 +1476,21 @@ class ProductivityService:
         range's data ONCE per employee and slices it per day in memory,
         instead of the 3-queries-per-employee-per-day pattern this method
         used to run inline (an 8-day, 4-employee report was taking ~14s -
-        720 sequential Supabase round-trips for a 6-month range)."""
+        720 sequential Supabase round-trips for a 6-month range).
+
+        day_presence_rows (raw, not the aggregated `presence` summary) and
+        config feed _compute_overall_productivity() - this is THE same
+        Overall Productivity calculation get_shift_summary() uses, so a
+        report row for today and the live view can never disagree.
+
+        now: left None for reports (get_daily_report_row/get_report_rows),
+        which intentionally treat a still-open trailing check-in/break as
+        "nothing to report yet" - see the comment below. get_shift_summary()
+        passes the actual current time so an employee's LIVE Attendance
+        Ratio isn't stuck at 0% all day just because they haven't checked
+        out yet - the still-open session's elapsed-so-far time counts,
+        mirroring what _reconstruct_session() already does for the same
+        still-open session elsewhere in this file."""
         check_ins = [e for e in events if e["event_type"] == "check_in"]
         check_outs = [e for e in events if e["event_type"] == "check_out"]
         first_check_in = _parse_iso(check_ins[0]["occurred_at"]) if check_ins else None
@@ -1189,16 +1530,33 @@ class ProductivityService:
             # An unmatched trailing check_in or break_start on a historical
             # day is a data anomaly (app crashed mid-session, forgot to
             # check out, etc.) - deliberately not counted rather than
-            # guessing an end time.
+            # guessing an end time (unless `now` says this is the live
+            # view asking about an actually-still-open session - see
+            # below).
+
+        if now is not None:
+            if open_break_start is not None:
+                total_break_seconds += (now - _parse_iso(open_break_start["occurred_at"])).total_seconds()
+            if open_check_in is not None:
+                total_worked_seconds += (now - open_check_in).total_seconds()
 
         total_shift_seconds = max(0.0, total_worked_seconds - total_break_seconds)
 
         active_seconds = (idle_row.get("active_seconds") or 0) if idle_row else 0
         idle_seconds = (idle_row.get("idle_seconds") or 0) if idle_row else 0
         app_focus = (idle_row.get("app_focus_seconds") or {}) if idle_row else {}
-        total_logged = (idle_row.get("total_logged_seconds") or 0) if idle_row else 0
-        productivity_percentage = (
-            round((active_seconds / total_logged) * 100, 2) if total_logged > 0 else 0.0
+        jabber_seconds = app_focus.get("Cisco Jabber", 0)
+        wildix_seconds = app_focus.get("Wildix", 0)
+
+        overall = ProductivityService._compute_overall_productivity(
+            combined_active_seconds=presence["combined_active_seconds"],
+            shift_duration_seconds=total_shift_seconds,
+            jabber_seconds=jabber_seconds,
+            wildix_seconds=wildix_seconds,
+            idle_seconds=idle_seconds,
+            day_events=events,
+            day_presence_rows=day_presence_rows,
+            config=config,
         )
 
         return {
@@ -1212,9 +1570,14 @@ class ProductivityService:
             "break_seconds": round(total_break_seconds),
             "active_seconds": active_seconds,
             "idle_seconds": idle_seconds,
-            "jabber_seconds": app_focus.get("Cisco Jabber", 0),
-            "wildix_seconds": app_focus.get("Wildix", 0),
-            "productivity_percentage": productivity_percentage,
+            "jabber_seconds": jabber_seconds,
+            "wildix_seconds": wildix_seconds,
+            "productivity_percentage": overall["overall_productivity_percentage"],
+            "attendance_ratio": overall["attendance_ratio"],
+            "app_focus_score": overall["app_focus_score"],
+            "compliance_score": overall["compliance_score"],
+            "compliance_breakdown": overall["compliance_breakdown"],
+            "weights_used": overall["weights_used"],
             "camera_active_seconds": presence["camera_active_seconds"],
             "combined_active_seconds": presence["combined_active_seconds"],
         }
@@ -1250,8 +1613,20 @@ class ProductivityService:
         idle_row = idle_rows[0] if idle_rows else None
 
         presence = self.get_presence_summary(employee_id, day)
+        day_presence_rows = (
+            self.client.table("presence_logs")
+            .select("*")
+            .eq("employee_id", str(employee_id))
+            .gte("occurred_at", day_start.isoformat())
+            .lte("occurred_at", day_end.isoformat())
+            .order("occurred_at")
+            .execute()
+        ).data or []
+        config = self.get_productivity_config()
 
-        return self._compute_daily_report_row(events, idle_row, presence, employee_id, day)
+        return self._compute_daily_report_row(
+            events, idle_row, presence, employee_id, day, day_presence_rows, config
+        )
 
     def get_report_rows(self, start_date: date, end_date: date, employee_id: UUID | None = None) -> list[dict]:
         """Flat list of one row per employee per day in [start_date,
@@ -1273,6 +1648,9 @@ class ProductivityService:
         days = self._karachi_date_range(start_date, end_date)
         range_start = datetime.combine(start_date, time.min, tzinfo=KARACHI_TZ)
         range_end = datetime.combine(end_date, time.max, tzinfo=KARACHI_TZ)
+        # Fetched once for the whole range/employee loop, not per employee
+        # per day - weights/thresholds don't vary within one report.
+        config = self.get_productivity_config()
 
         rows = []
         for employee in employees:
@@ -1332,7 +1710,8 @@ class ProductivityService:
                 day_presence_rows = presence_by_date.get(day_key, [])
                 presence = self._compute_presence_summary(day_presence_rows, emp_id, day)
                 row = self._compute_daily_report_row(
-                    day_events, idle_row_by_date.get(day_key), presence, emp_id, day
+                    day_events, idle_row_by_date.get(day_key), presence, emp_id, day,
+                    day_presence_rows, config,
                 )
                 row["employee_name"] = employee["full_name"]
                 rows.append(row)

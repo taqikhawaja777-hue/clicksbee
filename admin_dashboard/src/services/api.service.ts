@@ -27,6 +27,16 @@ class ApiService {
   }
 
   /**
+   * Read the current JWT (or null if not logged in) - used by
+   * socket.service.ts to authenticate the Socket.IO connection so the
+   * server can join this client to the correct notification room
+   * (admin-shared vs this-user-only) instead of trusting a client-claimed id.
+   */
+  getToken(): string | null {
+    return this.token;
+  }
+
+  /**
    * Clear the auth token (logout)
    */
   clearToken(): void {
@@ -174,6 +184,71 @@ class ApiService {
   /** Mark a task completed */
   async completeTask(taskId: string) {
     return this.post(`/tasks/${taskId}/complete`, {});
+  }
+
+  /** Notifications - the backend scopes these to the caller's own role:
+   * an EMPLOYEE JWT only ever gets rows addressed to their own user id,
+   * an ADMIN/MANAGER JWT only ever gets the org-wide admin feed. There is
+   * no query param here that widens that - it's enforced server-side. */
+  async getNotifications(page = 1, limit = 20) {
+    return this.get<{ data: any[]; pagination: any }>(`/notifications?page=${page}&limit=${limit}`);
+  }
+
+  async getUnreadNotificationCount() {
+    return this.get<{ count: number }>('/notifications/unread-count');
+  }
+
+  async markNotificationRead(id: string) {
+    return this.patch(`/notifications/${id}/read`, {});
+  }
+
+  async markAllNotificationsRead() {
+    return this.patch('/notifications/read-all', {});
+  }
+
+  /** "Send Notification" / message. recipientUserId targets one employee;
+   * allEmployees: true fans out to everyone in the org (management tier
+   * only). Who's actually allowed to reach whom (management can message
+   * anyone incl. broadcasting; floor tier - CSR/Team Lead/unset - can only
+   * message other floor-tier employees) is enforced server-side in
+   * NotificationsController.sendNotification, not just hidden in this UI. */
+  async sendNotification(body: {
+    recipientUserId?: string;
+    allEmployees?: boolean;
+    title?: string;
+    message: string;
+    attachmentUrl?: string;
+    attachmentName?: string;
+  }) {
+    return this.post('/notifications/send', body);
+  }
+
+  /** Everyone in the org messageable via Send Message - NOT the same,
+   * role-filtered list as getEmployees() (which excludes ADMIN/MANAGER
+   * accounts, so CSR/HR/SM - created via the Manager signup tab - would
+   * never show up as a recipient there). Who a given sender may actually
+   * message is still enforced server-side by /notifications/send. */
+  async getMessageableUsers() {
+    return this.get<{ data: any[] }>('/notifications/messageable-users');
+  }
+
+  /** Uploads a file (e.g. a PDF employee report) to attach to a message -
+   * multipart, so it bypasses the generic JSON request() helper. Call
+   * this first, then pass the returned url/fileName into sendNotification. */
+  async uploadNotificationAttachment(file: File): Promise<{ url: string; fileName: string }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const response = await fetch(`${this.baseUrl}/notifications/attachment`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error(`Attachment upload failed: HTTP ${response.status}`);
+    }
+    return response.json();
   }
 }
 

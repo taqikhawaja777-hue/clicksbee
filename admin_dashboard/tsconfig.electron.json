@@ -10,7 +10,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["main.ts", "preload.ts", "captureService.ts"]
+  "include": ["main.ts", "preload.ts", "captureService.ts", "localSettings.ts", "localScreenshotServer.ts", "screenshotCleanup.ts"]
 }
 
 

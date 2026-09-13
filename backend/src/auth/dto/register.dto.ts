@@ -38,4 +38,9 @@ export class RegisterDto {
   @IsString()
   @IsOptional()
   departmentName?: string;
+
+  @ApiPropertyOptional({ example: 'SM', description: 'Job title pick-list: SM, CSR, or Team Lead' })
+  @IsString()
+  @IsOptional()
+  designation?: string;
 }

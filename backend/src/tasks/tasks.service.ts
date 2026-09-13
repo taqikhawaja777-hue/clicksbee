@@ -1,18 +1,24 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto';
-import { TaskStatus } from '@prisma/client';
+import { NotificationRecipientType, NotificationType, TaskStatus } from '@prisma/client';
 import { AiTaskEstimatorService } from '../services/aiTaskEstimator';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class TasksService {
+  private readonly logger = new Logger(TasksService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiTaskEstimator: AiTaskEstimatorService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async createTask(userId: string, organizationId: string, dto: CreateTaskDto) {
@@ -43,7 +49,7 @@ export class TasksService {
       }
     }
 
-    return this.prisma.task.create({
+    const task = await this.prisma.task.create({
       data: {
         organizationId,
         projectId: dto.projectId,
@@ -58,6 +64,23 @@ export class TasksService {
         dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
       },
     });
+
+    // Personal notification to whoever it's actually assigned to - not the
+    // creator (who, per requirement 8, is the manager and already knows
+    // they just created it). Self-assigned tasks (assignedTo === userId,
+    // the default above) still get one - "your own task list changed" is
+    // exactly the kind of personal status confirmation the Employee
+    // Portal feed is for.
+    await this.notificationsService.createSystemNotification({
+      organizationId,
+      recipientType: NotificationRecipientType.EMPLOYEE,
+      recipientUserId: assignedTo,
+      type: NotificationType.TASK_ASSIGNED,
+      title: 'New Task Assigned',
+      message: `You've been assigned a new task: ${task.title}`,
+    });
+
+    return task;
   }
 
   async getTasks(
@@ -161,7 +184,7 @@ export class TasksService {
       );
     }
 
-    return this.prisma.task.update({
+    const updated = await this.prisma.task.update({
       where: { id: task.id },
       data: {
         status: TaskStatus.COMPLETED,
@@ -169,5 +192,61 @@ export class TasksService {
         actualMinutes,
       },
     });
+
+    const assigneeName = (task as any).assignee
+      ? `${(task as any).assignee.firstName} ${(task as any).assignee.lastName}`.trim()
+      : 'An employee';
+    await this.notificationsService.createSystemNotification({
+      organizationId,
+      recipientType: NotificationRecipientType.ADMIN,
+      type: NotificationType.TASK_COMPLETED,
+      title: 'Task Completed',
+      message: `${assigneeName} completed task: ${task.title}`,
+    });
+
+    return updated;
+  }
+
+  /**
+   * Notifies admins once per task the moment it crosses its due date
+   * without being completed/cancelled - overdueNotified guards against
+   * re-notifying every day it stays overdue. Runs hourly rather than
+   * daily-at-midnight so a task due mid-afternoon doesn't wait until the
+   * next day to be flagged.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async notifyOverdueTasks() {
+    const overdueTasks = await this.prisma.task.findMany({
+      where: {
+        dueDate: { lt: new Date() },
+        status: { notIn: [TaskStatus.COMPLETED, TaskStatus.CANCELLED] },
+        overdueNotified: false,
+      },
+      include: {
+        assignee: { select: { firstName: true, lastName: true } },
+      },
+    });
+
+    for (const task of overdueTasks) {
+      const assigneeName = task.assignee
+        ? `${task.assignee.firstName} ${task.assignee.lastName}`.trim()
+        : 'An employee';
+      try {
+        await this.notificationsService.createSystemNotification({
+          organizationId: task.organizationId,
+          recipientType: NotificationRecipientType.ADMIN,
+          type: NotificationType.TASK_OVERDUE,
+          title: 'Task Overdue',
+          message: `Task "${task.title}" assigned to ${assigneeName} is overdue`,
+        });
+        await this.prisma.task.update({ where: { id: task.id }, data: { overdueNotified: true } });
+      } catch (err) {
+        this.logger.warn(`Failed to send overdue notification for task ${task.id}: ${err}`);
+      }
+    }
+
+    if (overdueTasks.length > 0) {
+      this.logger.log(`Overdue-task sweep: notified for ${overdueTasks.length} task(s).`);
+    }
   }
 }

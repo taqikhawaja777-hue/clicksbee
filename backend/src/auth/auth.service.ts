@@ -114,6 +114,7 @@ export class AuthService {
         passwordHash,
         role: dto.role || Role.ADMIN,
         departmentId,
+        designation: dto.designation?.trim() || undefined,
         employeeCode: `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
       },
     });

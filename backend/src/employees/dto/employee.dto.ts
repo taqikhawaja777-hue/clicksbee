@@ -91,4 +91,9 @@ export class UpdateEmployeeDto {
   @ApiPropertyOptional({ description: 'Set to false to mark this employee as resigned' })
   @IsOptional()
   isActive?: boolean;
+
+  @ApiPropertyOptional({ example: 'SM', description: 'Job title pick-list: SM, CSR, or Team Lead' })
+  @IsString()
+  @IsOptional()
+  designation?: string;
 }

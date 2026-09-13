@@ -83,6 +83,23 @@ enum NotificationType {
   POLICY_UPDATED
   SYSTEM_ALERT
   ATTENDANCE_ALERT
+  CHECK_IN
+  CHECK_OUT
+  IDLE_ALERT
+  LATE_BREAK_RETURN
+  WASHROOM_LIMIT
+  CAMERA_ANOMALY
+  COMPLIANCE_VIOLATION
+  TASK_OVERDUE
+  MANUAL_MESSAGE
+}
+
+// ADMIN: visible to every ADMIN/MANAGER in the organization (a shared
+// inbox, not one row per manager) - recipientEmployeeId is always null.
+// EMPLOYEE: visible only to the one User named by recipientEmployeeId.
+enum NotificationRecipientType {
+  ADMIN
+  EMPLOYEE
 }
 
 enum LicensePlan {
@@ -147,6 +164,11 @@ model User {
   passwordHash   String
   role           Role      @default(EMPLOYEE)
   employeeCode   String?
+  // Job title within their department, e.g. "SM" (Sales Manager), "CSR"
+  // (Customer Sales Representative), "Team Lead" - a fixed pick-list on
+  // the signup form (AuthScreen.tsx's DESIGNATION_OPTIONS), same
+  // no-separate-management-UI approach as departmentName above.
+  designation    String?
   avatar         String?
   isActive       Boolean   @default(true)
   lastLoginAt    DateTime?
@@ -540,6 +562,10 @@ model Task {
   dueDate              DateTime?
   startedAt            DateTime?
   completedAt          DateTime?
+  // Set once the overdue-task sweep has already sent a notification for
+  // this task, so it fires exactly once per task rather than every day
+  // it remains overdue.
+  overdueNotified      Boolean      @default(false)
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
@@ -572,21 +598,37 @@ model AuditLog {
 }
 
 model Notification {
-  id             String           @id @default(auto()) @map("_id") @db.ObjectId
-  organizationId String           @db.ObjectId
-  userId         String           @db.ObjectId
+  id             String                     @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String                     @db.ObjectId
+  // recipientType ADMIN -> userId is null, visible to every ADMIN/MANAGER
+  // in this organization (a shared inbox). recipientType EMPLOYEE -> userId
+  // names the exact one User who may see this row - enforced in
+  // NotificationsService's queries, not just the frontend.
+  recipientType  NotificationRecipientType  @default(EMPLOYEE)
+  userId         String?                    @db.ObjectId
+  // 'system' for automatically generated notifications (check-in,
+  // check-out, idle alerts, compliance flags, etc.), or the ObjectId
+  // (as a string) of the admin/manager User who manually sent this one via
+  // the "Send Notification" feature.
+  sender         String                     @default("system")
   type           NotificationType
   title          String
   message        String
-  isRead         Boolean          @default(false)
+  isRead         Boolean                    @default(false)
   readAt         DateTime?
   metadata       Json?
-  createdAt      DateTime         @default(now())
+  createdAt      DateTime                   @default(now())
+  // Optional PDF (or other file) attached via the message composer - a
+  // plain URL to wherever StorageService actually wrote it (see
+  // POST /notifications/attachment), not the file content itself.
+  attachmentUrl  String?
+  attachmentName String?
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, userId, isRead])
+  @@index([organizationId, recipientType, isRead])
 }
 
 model SyncQueue {

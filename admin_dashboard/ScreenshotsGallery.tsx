@@ -1,137 +1,130 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Camera, 
-  Calendar, 
-  Users, 
-  Eye, 
-  X, 
-  Clock, 
-  Monitor, 
-  ShieldCheck, 
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Camera,
+  Calendar,
+  Users,
+  Eye,
+  X,
+  Clock,
+  Monitor,
+  ShieldCheck,
   ImageOff,
-  Database,
+  HardDrive,
   Trash2,
   Lock,
   ShieldAlert,
-  EyeOff
+  EyeOff,
+  WifiOff,
 } from 'lucide-react';
-import { ScreenshotRecord } from './captureService';
 import { useEmployee } from './EmployeeContext';
 
+interface GalleryScreenshot {
+  id: string;
+  userId: string | null;
+  userName: string;
+  userRole: string;
+  timestamp: string;
+  date: string;
+  imageUrl: string; // file:// URL
+  isIdle: boolean;
+  activeWindowName: string;
+}
+
+const toFileUrl = (filePath: string): string => {
+  // Windows paths ("C:\WorkTrackPro-Screenshots\...") need forward slashes
+  // and a leading slash before the drive letter to become a valid
+  // file:// URL Chromium's renderer will actually load.
+  const normalized = filePath.replace(/\\/g, '/');
+  return `file:///${normalized.startsWith('/') ? normalized.slice(1) : normalized}`;
+};
+
+const toGalleryShape = (entry: any): GalleryScreenshot => ({
+  id: entry.id,
+  userId: entry.employeeId,
+  userName: entry.employeeName,
+  userRole: entry.employeeRole || 'Employee',
+  timestamp: new Date(entry.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  date: entry.date,
+  imageUrl: toFileUrl(entry.filePath),
+  isIdle: !!entry.isIdle,
+  activeWindowName: entry.activeWindowName || 'Active Desktop Application',
+});
+
 export const ScreenshotsGallery: React.FC = () => {
-  const { user, screenshots: contextScreenshots } = useEmployee();
+  const { user } = useEmployee();
   const [selectedUser, setSelectedUser] = useState<string>('ALL');
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [screenshots, setScreenshots] = useState<ScreenshotRecord[]>([]);
-  const [activeModalImage, setActiveModalImage] = useState<ScreenshotRecord | null>(null);
+  const [screenshots, setScreenshots] = useState<GalleryScreenshot[]>([]);
+  const [activeModalImage, setActiveModalImage] = useState<GalleryScreenshot | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [mongoConnected, setMongoConnected] = useState<boolean>(true);
-  const [employeeOptions, setEmployeeOptions] = useState<any[]>([]);
+  const [serverStatus, setServerStatus] = useState<{ running: boolean; port: number; lanIpAddresses: string[] } | null>(null);
 
-  useEffect(() => {
-    fetch('http://localhost:3000/api/v1/employees')
-      .then(res => res.json())
-      .then(json => {
-        const list = Array.isArray(json) ? json : (json?.data && Array.isArray(json.data) ? json.data : []);
-        if (list.length > 0) setEmployeeOptions(list);
-      })
-      .catch(e => console.warn('ScreenshotsGallery employee dropdown fetch error:', e));
+  const getIpc = () => {
+    if (typeof window === 'undefined' || !(window as any).require) return null;
+    return (window as any).require('electron').ipcRenderer;
+  };
+
+  // Reads straight from this PC's local screenshot folder
+  // (screenshotStoragePath/<employee>/<date>/) via localScreenshotServer.ts's
+  // list-local-screenshots IPC handler - replaces the old MongoDB Atlas
+  // /screenshots/feed fetch + localStorage/BroadcastChannel merge (three
+  // separate sources of the same data, now down to the one real one: this
+  // PC's disk).
+  const fetchLocalScreenshots = useCallback(async () => {
+    const ipcRenderer = getIpc();
+    if (!ipcRenderer) return;
+    try {
+      const entries = await ipcRenderer.invoke('list-local-screenshots');
+      setScreenshots((Array.isArray(entries) ? entries : []).map(toGalleryShape));
+    } catch (e) {
+      console.warn('[ScreenshotsGallery] Failed to list local screenshots:', e);
+    }
   }, []);
 
-  // Sync Real Captured Screenshots from Context, LocalStorage & MongoDB Feed
-  const syncAllRealScreenshots = async () => {
-    let mongoList: ScreenshotRecord[] = [];
+  const fetchServerStatus = useCallback(async () => {
+    const ipcRenderer = getIpc();
+    if (!ipcRenderer) return;
     try {
-      const res = await fetch('http://localhost:3000/api/v1/screenshots/feed');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          mongoList = data;
-          setMongoConnected(true);
-        }
-      }
+      const status = await ipcRenderer.invoke('get-local-server-status');
+      setServerStatus(status);
     } catch (e) {
-      console.log('MongoDB API feed extraction fallback mode:', e);
+      console.warn('[ScreenshotsGallery] Failed to read local server status:', e);
     }
-
-    let sharedList: any[] = [];
-    try {
-      const savedStr = localStorage.getItem('stitch_shared_screenshots');
-      if (savedStr) {
-        sharedList = JSON.parse(savedStr);
-      }
-    } catch (e) {
-      console.warn('LocalStorage load error:', e);
-    }
-
-    // Merge: Context Screenshots + LocalStorage + MongoDB
-    const allCombined = [
-      ...contextScreenshots,
-      ...sharedList,
-      ...mongoList,
-    ];
-
-    // Deduplicate by id or imageUrl
-    const uniqueMap = new Map<string, ScreenshotRecord>();
-    allCombined.forEach((item: any) => {
-      if (item && item.imageUrl) {
-        const key = item.id || item.imageUrl;
-        if (!uniqueMap.has(key)) {
-          uniqueMap.set(key, {
-            id: item.id || `shot-${Date.now()}-${Math.random()}`,
-            userId: item.userId || 'emp-101',
-            userName: item.userName || 'umer Sohail',
-            userRole: item.userRole || 'Full Stack Engineer',
-            timestamp: item.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            isoTimestamp: item.isoTimestamp || new Date().toISOString(),
-            date: item.date || new Date().toISOString().split('T')[0],
-            imageUrl: item.imageUrl,
-            isIdle: !!item.isIdle,
-            activeWindowName: item.windowTitle || item.activeWindowName || 'File Explorer - This PC',
-            screenshotNumber: item.screenshotNumber || 1,
-            totalTodayCount: item.totalTodayCount || 1,
-          });
-        }
-      }
-    });
-
-    const finalRealList = Array.from(uniqueMap.values());
-    setScreenshots(finalRealList);
-  };
+  }, []);
 
   useEffect(() => {
     if (user.role === 'EMPLOYEE') return;
 
-    syncAllRealScreenshots();
+    fetchLocalScreenshots();
+    fetchServerStatus();
 
-    // 1. Listen for BroadcastChannel events across tabs
-    let bc: BroadcastChannel | null = null;
-    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      bc = new BroadcastChannel('stitch_screen_capture_channel');
-      bc.onmessage = (event) => {
-        if (event.data && event.data.type === 'REAL_SCREENSHOT_CAPTURED') {
-          syncAllRealScreenshots();
-        } else if (event.data && event.data.type === 'ALL_SCREENSHOTS_DELETED') {
-          setScreenshots([]);
-          setToastMessage('All screenshots deleted successfully!');
-          setTimeout(() => setToastMessage(null), 3000);
-        }
-      };
+    const ipcRenderer = getIpc();
+    // Live-refresh the moment a screenshot lands on disk - either from a
+    // remote employee machine over the LAN (local-screenshot-received,
+    // broadcast by localScreenshotServer.ts) or one captured on this same
+    // machine (screenshot-captured-event, broadcast by captureService.ts,
+    // relevant if this admin account is itself being tracked).
+    const handleUpdate = () => fetchLocalScreenshots();
+    if (ipcRenderer) {
+      ipcRenderer.on('local-screenshot-received', handleUpdate);
+      ipcRenderer.on('screenshot-captured-event', handleUpdate);
     }
 
-    // 2. Storage event listener for cross-tab updates
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'stitch_shared_screenshots' || e.key === 'stitch_employee_state') {
-        syncAllRealScreenshots();
-      }
-    };
-    window.addEventListener('storage', handleStorageChange);
+    // Fallback safety-net poll - covers the (rare) case a broadcast is
+    // missed, without depending on it for correctness.
+    const pollTimer = setInterval(() => {
+      fetchLocalScreenshots();
+      fetchServerStatus();
+    }, 60000);
 
     return () => {
-      if (bc) bc.close();
-      window.removeEventListener('storage', handleStorageChange);
+      if (ipcRenderer) {
+        ipcRenderer.removeListener('local-screenshot-received', handleUpdate);
+        ipcRenderer.removeListener('screenshot-captured-event', handleUpdate);
+      }
+      clearInterval(pollTimer);
     };
-  }, [contextScreenshots, user.role]);
+  }, [user.role, fetchLocalScreenshots, fetchServerStatus]);
 
   // RESTRICT ACCESS IF LOGGED IN USER IS AN EMPLOYEE
   if (user.role === 'EMPLOYEE') {
@@ -181,53 +174,44 @@ export const ScreenshotsGallery: React.FC = () => {
     );
   }
 
-  // Delete All Screenshots Action
+  // Delete All Screenshots Action - now a real delete of every file under
+  // screenshotStoragePath (previously this only cleared localStorage/UI
+  // state despite the confirm dialog claiming to delete "from MongoDB
+  // Atlas and local storage" - it never actually deleted anything real).
   const handleDeleteAllScreenshots = async () => {
-    if (!confirm('Are you sure you want to delete all screenshots from MongoDB Atlas and local storage?')) {
+    if (!confirm('Are you sure you want to permanently delete all locally stored screenshots from this PC?')) {
       return;
     }
+    const ipcRenderer = getIpc();
+    if (!ipcRenderer) return;
 
     try {
-      // 1. Clear LocalStorage
-      localStorage.removeItem('stitch_shared_screenshots');
-
-      // 2. Clear state
-      setScreenshots([]);
-
-      // 3. Broadcast to all open tabs
-      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        const bc = new BroadcastChannel('stitch_screen_capture_channel');
-        bc.postMessage({ type: 'ALL_SCREENSHOTS_DELETED' });
-        bc.close();
+      const result = await ipcRenderer.invoke('delete-all-local-screenshots');
+      if (result?.success) {
+        setScreenshots([]);
+        setToastMessage('All local screenshots deleted successfully!');
+      } else {
+        setToastMessage('Failed to delete local screenshots.');
       }
-
-      setToastMessage('All screenshots deleted successfully!');
       setTimeout(() => setToastMessage(null), 4000);
     } catch (err) {
       console.error('Delete error:', err);
+      setToastMessage('Failed to delete local screenshots.');
+      setTimeout(() => setToastMessage(null), 4000);
     }
   };
 
-  const getDisplayImageUrl = (url: string) => {
-    if (!url) return url;
-    if (url.startsWith('/api/v1/')) {
-      return `http://localhost:3000${url}`;
-    }
-    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:image/')) {
-      return url;
-    }
-    return url;
-  };
+  const employeeNames = Array.from(new Set(screenshots.map((s) => s.userName))).sort();
 
   const filteredScreenshots = screenshots.filter((shot) => {
-    const matchesUser = selectedUser === 'ALL' || shot.userId === selectedUser || shot.userName.toLowerCase().includes(selectedUser.toLowerCase());
+    const matchesUser = selectedUser === 'ALL' || shot.userName === selectedUser;
     const matchesDate = !selectedDate || shot.date === selectedDate;
     return matchesUser && matchesDate;
   });
 
   return (
     <div className="p-8 space-y-6 max-w-7xl mx-auto font-sans select-none">
-      
+
       {/* 1. Header Banner & Filter Controls */}
       <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200/80 dark:border-slate-800 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         <div>
@@ -236,10 +220,18 @@ export const ScreenshotsGallery: React.FC = () => {
               <Camera className="w-3.5 h-3.5" />
               <span>Real-time 5-Min Desktop Capture Sync</span>
             </div>
-            {mongoConnected && (
+            {serverStatus?.running ? (
               <div className="inline-flex items-center space-x-1.5 bg-emerald-50 dark:bg-emerald-950/50 px-3 py-1 rounded-full text-xs font-bold text-emerald-600 dark:text-emerald-400 mb-2 border border-emerald-200/60 dark:border-emerald-800/60">
-                <Database className="w-3.5 h-3.5" />
-                <span>MongoDB Collection 'Screenshot' Connected</span>
+                <HardDrive className="w-3.5 h-3.5" />
+                <span>
+                  Local Server Listening on Port {serverStatus.port}
+                  {serverStatus.lanIpAddresses.length > 0 ? ` (${serverStatus.lanIpAddresses[0]})` : ''}
+                </span>
+              </div>
+            ) : (
+              <div className="inline-flex items-center space-x-1.5 bg-rose-50 dark:bg-rose-950/50 px-3 py-1 rounded-full text-xs font-bold text-rose-600 dark:text-rose-400 mb-2 border border-rose-200/60 dark:border-rose-800/60">
+                <WifiOff className="w-3.5 h-3.5" />
+                <span>Local Screenshot Server Not Running</span>
               </div>
             )}
           </div>
@@ -247,13 +239,13 @@ export const ScreenshotsGallery: React.FC = () => {
             Manager Desktop Screenshots Gallery
           </h1>
           <p className="text-xs text-slate-400 font-medium mt-0.5">
-            Real PC Desktop Screen Captures from active employee screens (umer Sohail) stored as PNG files & recorded in MongoDB Atlas collection <code className="text-indigo-500 font-mono">Screenshot</code>.
+            Real PC desktop screen captures received directly from employee machines over the local network and stored on this PC's disk under <code className="text-indigo-500 font-mono">{serverStatus?.port ? 'WorkTrackPro-Screenshots' : '...'}</code>.
           </p>
         </div>
 
         {/* Filter Controls Bar & Action Buttons */}
         <div className="flex flex-wrap items-center gap-3">
-          
+
           {/* Employee Selector Dropdown */}
           <div className="relative">
             <select
@@ -262,9 +254,9 @@ export const ScreenshotsGallery: React.FC = () => {
               className="appearance-none pl-9 pr-8 py-2.5 bg-slate-100/80 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-2xl text-xs font-semibold text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
             >
               <option value="ALL">All Employees</option>
-              {employeeOptions.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.name} ({emp.role || 'Employee'})
+              {employeeNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
                 </option>
               ))}
             </select>
@@ -297,7 +289,7 @@ export const ScreenshotsGallery: React.FC = () => {
       {/* Toast Notification Alert */}
       {toastMessage && (
         <div className="p-4 bg-indigo-600 text-white rounded-2xl shadow-xl flex items-center space-x-3 text-xs font-bold animate-bounce">
-          <Database className="w-4 h-4 text-emerald-300 shrink-0" />
+          <HardDrive className="w-4 h-4 text-emerald-300 shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}
@@ -308,29 +300,29 @@ export const ScreenshotsGallery: React.FC = () => {
           <div className="w-16 h-16 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 mb-4">
             <ImageOff className="w-8 h-8 opacity-60" />
           </div>
-          <h3 className="text-lg font-bold text-slate-800 dark:text-white">No Screenshots Found in MongoDB</h3>
+          <h3 className="text-lg font-bold text-slate-800 dark:text-white">No Screenshots Found Locally</h3>
           <p className="text-xs text-slate-400 max-w-sm mt-1">
-            No active screenshot records exist in MongoDB Atlas collection <code className="text-indigo-500 font-mono">Screenshot</code>. New automated screen captures will populate when employee sessions run.
+            No screenshot files exist on this PC's disk for the selected employee/date yet. New captures arrive here automatically every 5 minutes while an employee is signed in and their "Admin PC IP" setting points at this machine.
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredScreenshots.map((shot) => (
-            <div 
-              key={shot.id} 
+            <div
+              key={shot.id}
               className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col justify-between transition-all hover:shadow-md"
             >
-              
+
               {/* Card Header: Employee Details & Status */}
               <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
                 <div className="flex items-center space-x-3">
                   <div className="w-9 h-9 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-sm">
-                    {(shot.userName || 'umer Sohail').split(' ').map(n => n[0]).join('')}
+                    {(shot.userName || '?').split(' ').map(n => n[0]).join('')}
                   </div>
                   <div>
                     <h3 className="font-extrabold text-xs text-slate-900 dark:text-white">{shot.userName}</h3>
                     <span className="inline-block bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full mt-0.5">
-                      {shot.userRole || 'Software Engineer'}
+                      {shot.userRole}
                     </span>
                   </div>
                 </div>
@@ -351,23 +343,18 @@ export const ScreenshotsGallery: React.FC = () => {
 
               {/* Real Screen Preview Image & Hover Controls */}
               <div className="relative aspect-video bg-slate-950 overflow-hidden group cursor-pointer" onClick={() => setActiveModalImage(shot)}>
-                <img 
-                  src={getDisplayImageUrl(shot.imageUrl)} 
-                  alt={`Capture ${shot.timestamp}`} 
+                <img
+                  src={shot.imageUrl}
+                  alt={`Capture ${shot.timestamp}`}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-95"
                 />
-                
+
                 {/* Hover Overlay with Eye / Zoom Icon */}
                 <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-xs opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center text-white space-y-2">
                   <div className="p-3 bg-white/20 backdrop-blur-md rounded-full border border-white/30 text-white shadow-xl">
                     <Eye className="w-6 h-6" />
                   </div>
                   <span className="text-xs font-extrabold tracking-wide">Click to Expand High-Res View</span>
-                </div>
-
-                {/* Screenshot Badge Number */}
-                <div className="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-md text-white px-2.5 py-1 rounded-lg text-[10px] font-bold border border-white/10">
-                  #{shot.screenshotNumber || 1} of {shot.totalTodayCount || 1} today
                 </div>
               </div>
 
@@ -377,7 +364,7 @@ export const ScreenshotsGallery: React.FC = () => {
                   <div className="flex items-center space-x-1.5 truncate">
                     <Monitor className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
                     <span className="font-bold text-slate-700 dark:text-slate-200 truncate" title={shot.activeWindowName}>
-                      {shot.activeWindowName || 'This PC - New Volume (D:)'}
+                      {shot.activeWindowName}
                     </span>
                   </div>
                   <div className="flex items-center space-x-1 shrink-0 font-bold text-slate-400">
@@ -396,12 +383,12 @@ export const ScreenshotsGallery: React.FC = () => {
       {activeModalImage && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 w-full max-w-5xl rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[90vh]">
-            
+
             {/* Modal Header */}
             <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
               <div className="flex items-center space-x-3">
                 <div className="w-9 h-9 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center">
-                  {(activeModalImage.userName || 'umer Sohail').split(' ').map(n => n[0]).join('')}
+                  {(activeModalImage.userName || '?').split(' ').map(n => n[0]).join('')}
                 </div>
                 <div>
                   <h3 className="font-bold text-sm text-slate-900 dark:text-white">{activeModalImage.userName} ({activeModalImage.userRole})</h3>
@@ -409,7 +396,7 @@ export const ScreenshotsGallery: React.FC = () => {
                 </div>
               </div>
 
-              <button 
+              <button
                 onClick={() => setActiveModalImage(null)}
                 className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full text-slate-500 transition-colors"
               >
@@ -419,18 +406,16 @@ export const ScreenshotsGallery: React.FC = () => {
 
             {/* High Resolution Image View */}
             <div className="flex-1 overflow-auto bg-slate-950 p-4 flex items-center justify-center">
-              <img 
-                  src={getDisplayImageUrl(activeModalImage.imageUrl)} 
-              />
+              <img src={activeModalImage.imageUrl} />
             </div>
 
             {/* Modal Footer */}
             <div className="p-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
               <div className="flex items-center space-x-2">
-                <Database className="w-4 h-4 text-emerald-500" />
-                <span>Extracted Record from MongoDB Collection 'Screenshot' (Real PC Desktop Capture)</span>
+                <HardDrive className="w-4 h-4 text-emerald-500" />
+                <span>Stored locally on this PC's disk (Real PC Desktop Capture)</span>
               </div>
-              <button 
+              <button
                 onClick={() => setActiveModalImage(null)}
                 className="px-4 py-2 bg-indigo-600 text-white font-bold rounded-xl shadow-sm hover:bg-indigo-700"
               >

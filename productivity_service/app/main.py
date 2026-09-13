@@ -4,7 +4,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
-from .routers import activity, dashboard, employees, idle_time, presence, reports, shift, sync, tasks, tickets
+from .routers import (
+    activity,
+    dashboard,
+    employees,
+    idle_time,
+    presence,
+    productivity_config,
+    reports,
+    shift,
+    sync,
+    tasks,
+    tickets,
+)
 
 logger = logging.getLogger("app")
 
@@ -29,6 +41,7 @@ app.include_router(idle_time.router)
 app.include_router(presence.router)
 app.include_router(shift.router)
 app.include_router(reports.router)
+app.include_router(productivity_config.router)
 
 _scheduler = None
 
@@ -41,7 +54,9 @@ def start_scheduler() -> None:
     global _scheduler
     from apscheduler.schedulers.background import BackgroundScheduler
 
-    from .jobs.scheduled_breaks import BREAK_WINDOWS, end_scheduled_break, start_scheduled_break
+    from datetime import datetime, timedelta
+
+    from .jobs.scheduled_breaks import BREAK_WINDOWS, check_late_returns, end_scheduled_break, start_scheduled_break
 
     _scheduler = BackgroundScheduler()
 
@@ -81,6 +96,27 @@ def start_scheduler() -> None:
             timezone="Asia/Karachi",
             args=[window["key"]],
             id=f"break_end_{window['key']}",
+        )
+        # Fixed 5-minute-after-break-end offset rather than trying to
+        # precisely compute end_time + the CONFIGURABLE break_grace_period_seconds
+        # at startup (which would drift out of sync the moment an admin
+        # changes that setting later) - 5 minutes comfortably clears the
+        # default 2-minute grace period and any reasonably short configured
+        # one. check_late_returns() itself reads the LIVE config value for
+        # what actually counts as "late", so only the cron's firing time is
+        # approximate, not the threshold it checks against.
+        late_check_time = (
+            datetime.combine(datetime.today(), datetime.min.time().replace(hour=int(end_hour), minute=int(end_minute)))
+            + timedelta(minutes=5)
+        )
+        _scheduler.add_job(
+            check_late_returns,
+            "cron",
+            hour=late_check_time.hour,
+            minute=late_check_time.minute,
+            timezone="Asia/Karachi",
+            args=[window["key"]],
+            id=f"break_late_check_{window['key']}",
         )
     logger.info("Scheduled-break cron jobs registered for: %s", [w["key"] for w in BREAK_WINDOWS])
 

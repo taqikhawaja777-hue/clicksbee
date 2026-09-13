@@ -19,12 +19,14 @@ function todayDateKey(): string {
 }
 
 const DEPARTMENT_OPTIONS = ['Engineering', 'Design', 'Marketing', 'Sales', 'HR'];
+const DESIGNATION_OPTIONS = ['SM', 'CSR', 'Team Lead', 'HR'];
 
 export interface EmployeeDirectoryItem {
   id: string;
   name: string;
   email: string;
   department: string;
+  designation: string;
   role: string;
   checkIn: string;
   status: 'Online' | 'Break' | 'Offline';
@@ -100,6 +102,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
               name: emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || 'Registered User',
               email: emp.email || 'user@company.corp',
               department: typeof emp.department === 'string' ? emp.department : (emp.department?.name || 'Engineering'),
+              designation: emp.designation || '',
               role: emp.role || 'Full Stack Engineer',
               checkIn: attendanceRow?.checkInAt
                 ? new Date(attendanceRow.checkInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -155,6 +158,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
       name: newEmployeeName.trim(),
       email: newEmployeeEmail.trim() || `${newEmployeeName.toLowerCase().replace(/\s+/g, '')}@company.com`,
       department: newEmployeeDept,
+      designation: '',
       role: newEmployeeRole,
       checkIn: '09:00',
       status: 'Online',
@@ -180,12 +184,14 @@ export const EmployeeDirectoryTable: React.FC = () => {
   // adding) rather than only updating local state like Add/Delete still do.
   const [editingEmployee, setEditingEmployee] = useState<EmployeeDirectoryItem | null>(null);
   const [editDept, setEditDept] = useState<string>(DEPARTMENT_OPTIONS[0]);
+  const [editDesignation, setEditDesignation] = useState<string>('');
   const [editIsActive, setEditIsActive] = useState<boolean>(true);
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
   const openEditModal = (emp: EmployeeDirectoryItem) => {
     setEditingEmployee(emp);
     setEditDept(DEPARTMENT_OPTIONS.includes(emp.department) ? emp.department : DEPARTMENT_OPTIONS[0]);
+    setEditDesignation(DESIGNATION_OPTIONS.includes(emp.designation) ? emp.designation : '');
     setEditIsActive(emp.isActive);
   };
 
@@ -197,7 +203,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
       const res = await fetch(`http://localhost:3000/api/v1/employees/${editingEmployee.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ departmentName: editDept, isActive: editIsActive }),
+        body: JSON.stringify({ departmentName: editDept, designation: editDesignation || undefined, isActive: editIsActive }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setEditingEmployee(null);
@@ -284,7 +290,14 @@ export const EmployeeDirectoryTable: React.FC = () => {
                       {emp.avatar}
                     </div>
                     <div>
-                      <p className="font-extrabold text-slate-800 dark:text-white text-xs">{emp.name}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="font-extrabold text-slate-800 dark:text-white text-xs">{emp.name}</p>
+                        {emp.designation && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400">
+                            {emp.designation}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-slate-400 mt-0.5">{emp.email}</p>
                     </div>
                   </div>
@@ -481,6 +494,20 @@ export const EmployeeDirectoryTable: React.FC = () => {
                 >
                   {DEPARTMENT_OPTIONS.map((dept) => (
                     <option key={dept} value={dept}>{dept}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Designation</label>
+                <select
+                  value={editDesignation}
+                  onChange={(e) => setEditDesignation(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none"
+                >
+                  <option value="">None</option>
+                  {DESIGNATION_OPTIONS.map((d) => (
+                    <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
               </div>

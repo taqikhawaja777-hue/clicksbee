@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from ..deps import get_productivity_service
 from ..schemas.idle_time import EmployeeIdleStatusOut, IdleTimeLogIn, IdleTimeLogOut, IdleTimeSummaryOut
 from ..services.productivity import ProductivityService
+from ..services.notify_client import notify_system_event
 
 router = APIRouter(prefix="/api/idle-time", tags=["idle-time"])
 
@@ -15,7 +16,31 @@ def log_idle_time(
     payload: IdleTimeLogIn,
     service: ProductivityService = Depends(get_productivity_service),
 ) -> IdleTimeLogOut:
+    # Read the pre-upsert value so we can tell whether THIS update is what
+    # just crossed the threshold, vs. the employee having already been over
+    # it for a while - idle_seconds is a whole-day cumulative running total
+    # the client re-posts every poll, so without this check every single
+    # poll after the first crossing would fire another notification.
+    previous_rows = service.get_idle_time_range(payload.employee_id, payload.date, payload.date)
+    previous_idle_seconds = previous_rows[0]["idle_seconds"] if previous_rows else 0
+
     row = service.upsert_idle_time_log(payload)
+
+    config = service.get_productivity_config()
+    threshold = config["idle_penalty_threshold_seconds"]
+    if previous_idle_seconds < threshold <= payload.idle_seconds:
+        employee = service.get_employee(payload.employee_id)
+        if employee:
+            minutes = threshold // 60
+            notify_system_event(
+                employee_email=employee.get("email"),
+                notification_type="IDLE_ALERT",
+                admin_title="Employee Idle Alert",
+                admin_message=f"{employee.get('full_name')} has been idle for {minutes}+ minutes",
+                employee_title="Idle Time Alert",
+                employee_message=f"You are approaching your daily idle time limit ({minutes}+ minutes idle today)",
+            )
+
     return IdleTimeLogOut(**row)
 
 

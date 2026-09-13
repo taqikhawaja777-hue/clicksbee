@@ -151,6 +151,29 @@ export type TriggeredBy = 'manual' | 'scheduled';
  * should read from this same shape (via useShiftSummary), not recompute
  * any of it independently.
  */
+/** Where Compliance Score's points were lost, if any - see
+ * ProductivityService._compute_compliance_score() on the backend. */
+export interface ComplianceBreakdown {
+  idlePenaltyPoints: number;
+  lateReturnPenaltyPoints: number;
+  washroomPenaltyPoints: number;
+  idleSeconds: number;
+  idleThresholdSeconds: number;
+  lateReturnCount: number;
+  washroomBreakCount: number;
+  washroomOverLimitCount: number;
+  washroomOverDurationCount: number;
+}
+
+/** The weights actually applied to a productivityPercentage, read from
+ * productivity_config at calculation time - not a hardcoded guess. */
+export interface ProductivityWeights {
+  attendanceWeight: number;
+  appFocusWeight: number;
+  complianceWeight: number;
+  callEfficiencyWeight: number;
+}
+
 export interface ShiftSummary {
   employeeId: string;
   date: string;
@@ -162,13 +185,38 @@ export interface ShiftSummary {
   idleSeconds: number;
   jabberSeconds: number;
   wildixSeconds: number;
+  // Unified Overall Productivity score - Attendance Ratio + App Focus
+  // Score + Compliance Score, weighted. See
+  // ProductivityService._compute_overall_productivity() on the backend;
+  // this is THE single source every productivity percentage in this app
+  // now reads from.
   productivityPercentage: number;
+  attendanceRatio: number;
+  appFocusScore: number;
+  complianceScore: number;
+  complianceBreakdown: ComplianceBreakdown;
+  weightsUsed: ProductivityWeights;
   status: IdleStatus;
   cameraActiveSeconds: number;
   inputActiveSeconds: number;
   combinedActiveSeconds: number;
   idleAwaySeconds: number;
   sampleCount: number;
+}
+
+export interface ProductivityConfig {
+  attendanceWeight: number;
+  appFocusWeight: number;
+  complianceWeight: number;
+  callEfficiencyWeight: number;
+  idlePenaltyThresholdSeconds: number;
+  idlePenaltyPointsPerMinute: number;
+  idlePenaltyMaxPoints: number;
+  breakGracePeriodSeconds: number;
+  lateReturnPenaltyPoints: number;
+  washroomDailyLimit: number;
+  washroomMinutesLimit: number;
+  washroomPenaltyPoints: number;
 }
 
 export interface BreakStatus {
@@ -362,6 +410,10 @@ class ProductivityApiService {
   getProductivityReport(startDate: string, endDate: string) {
     const query = new URLSearchParams({ startDate, endDate });
     return this.request<ReportRows>('GET', `/api/reports/productivity?${query.toString()}`);
+  }
+
+  getProductivityConfig() {
+    return this.request<ProductivityConfig>('GET', '/api/productivity-config');
   }
 }
 

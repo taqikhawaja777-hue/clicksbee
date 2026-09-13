@@ -1,4 +1,7 @@
-import { desktopCapturer, powerMonitor, ipcMain, BrowserWindow } from 'electron';
+import { app, desktopCapturer, powerMonitor, ipcMain, BrowserWindow } from 'electron';
+import fs from 'fs';
+import path from 'path';
+import { getLocalSettings } from './localSettings';
 
 export interface ScreenshotRecord {
   id: string;
@@ -16,11 +19,40 @@ export interface ScreenshotRecord {
   syncStatus?: 'ONLINE' | 'QUEUED_OFFLINE';
 }
 
-// In-memory store & Offline SQLite / Local Sync Queue
+// In-memory store (gallery/team feed) - unrelated to the disk-persisted
+// offline queue below.
 let screenshotRecordsStore: ScreenshotRecord[] = [];
-let offlineSyncQueue: ScreenshotRecord[] = [];
 let automatedCaptureTimer: NodeJS.Timeout | null = null;
 let liveVisionCaptureTimer: NodeJS.Timeout | null = null;
+let offlineQueueRetryTimer: NodeJS.Timeout | null = null;
+
+// Failed-upload queue, persisted to disk (not just an in-memory array like
+// before) so a screenshot captured while the admin PC is unreachable isn't
+// silently lost if the employee's app restarts before connectivity comes
+// back - the whole point of "queue and retry until reachable" is defeated
+// if a crash/restart between the capture and the retry drops it anyway.
+const OFFLINE_QUEUE_RETRY_MS = 60 * 1000;
+
+function getOfflineQueueFilePath(): string {
+  return path.join(app.getPath('userData'), 'worktrackpro-screenshot-offline-queue.json');
+}
+
+function loadOfflineQueue(): ScreenshotRecord[] {
+  try {
+    return JSON.parse(fs.readFileSync(getOfflineQueueFilePath(), 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+function saveOfflineQueue(queue: ScreenshotRecord[]): void {
+  try {
+    fs.mkdirSync(path.dirname(getOfflineQueueFilePath()), { recursive: true });
+    fs.writeFileSync(getOfflineQueueFilePath(), JSON.stringify(queue), 'utf-8');
+  } catch (err) {
+    console.warn('[CaptureService] Failed to persist offline screenshot queue to disk:', err);
+  }
+}
 
 /**
  * Whoever is actually logged in on this device right now - set via the
@@ -126,79 +158,105 @@ export async function captureDesktopScreen(
   }
 }
 
+function buildUploadUrl(): string | null {
+  const settings = getLocalSettings();
+  if (!settings.adminPcIp) return null; // not configured yet - see ManagerSettingsView's "Admin PC IP" field
+  return `http://${settings.adminPcIp}:${settings.adminPcPort || 5000}/upload`;
+}
+
+async function postScreenshotToAdminPc(record: ScreenshotRecord): Promise<boolean> {
+  const url = buildUploadUrl();
+  if (!url) {
+    // No "Admin PC IP" configured yet - treat exactly like unreachable
+    // (throw, so the caller queues it for retry) rather than returning
+    // false, which the caller's try/catch would otherwise silently read
+    // as success and mark syncStatus 'ONLINE' without ever having sent
+    // anything anywhere.
+    throw new Error('Admin PC IP is not configured (see Settings)');
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      employeeId: record.userId,
+      employeeName: record.userName,
+      employeeRole: record.userRole,
+      image: record.imageUrl,
+      activeWindowName: record.activeWindowName,
+      timestamp: record.isoTimestamp,
+      date: record.date,
+      isIdle: record.isIdle,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return true;
+}
+
 /**
- * STEP 3: TRANSMISSION & STORAGE LOGIC
+ * STEP 3: TRANSMISSION & STORAGE LOGIC - POSTs directly to the admin PC's
+ * local screenshot server over the LAN (see localScreenshotServer.ts on
+ * the receiving end), replacing the old MongoDB Atlas upload. Failed
+ * uploads (admin PC offline/unreachable, or "Admin PC IP" not configured
+ * yet) are queued to disk and retried periodically by
+ * retryOfflineQueuePeriodically() below, not just opportunistically on the
+ * next successful capture like before - a screenshot captured on a day the
+ * admin PC never comes back online must not just sit forever waiting for
+ * a capture that also happens to succeed.
  */
 async function transmitAndStoreScreenshot(record: ScreenshotRecord): Promise<void> {
   try {
-    // Attempt online transmission to NestJS backend -> MongoDB Atlas collection Screenshot
-    const response = await fetch('http://localhost:3000/api/v1/screenshots/capture', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userName: record.userName,
-        userId: record.userId,
-        userRole: record.userRole,
-        imageUrl: record.imageUrl,
-        activeWindowName: record.activeWindowName,
-        timestamp: record.timestamp,
-        date: record.date,
-        isIdle: record.isIdle,
-      }),
-    });
-
-    if (response.ok) {
-      const savedDoc = await response.json();
-      record.imageUrl = savedDoc.imageUrl || record.imageUrl;
-      record.syncStatus = 'ONLINE';
-      console.log(`[CaptureService] Transmission SUCCESS: Saved PNG on disk & document in MongoDB collection Screenshot! ID: ${savedDoc.id}`);
-      
-      // Process offline queue if connection restored
-      await flushOfflineQueue();
-    } else {
-      throw new Error(`HTTP Error ${response.status}`);
-    }
+    await postScreenshotToAdminPc(record);
+    record.syncStatus = 'ONLINE';
+    console.log(`[CaptureService] Transmission SUCCESS: sent to admin PC.`);
+    void flushOfflineQueue(); // fast path - the network is evidently up again
   } catch (err) {
-    console.warn('[CaptureService] Backend offline / network un-reachable. Saving screenshot to offline sync queue...', err);
+    console.warn('[CaptureService] Admin PC offline / unreachable / not configured. Queuing screenshot for retry...', err);
     record.syncStatus = 'QUEUED_OFFLINE';
-    offlineSyncQueue.push(record);
+    const queue = loadOfflineQueue();
+    queue.push(record);
+    saveOfflineQueue(queue);
   }
 
-  // Prepend to memory store
+  // Prepend to memory store (drives the manager's live gallery feed via
+  // get-team-screenshots - unrelated to the disk queue above).
   screenshotRecordsStore = [record, ...screenshotRecordsStore];
 }
 
 /**
- * Flush Offline Sync Queue when Network is Restored
+ * Retries every disk-queued screenshot against the admin PC. Called
+ * opportunistically right after any capture succeeds (fast path - the
+ * network is evidently up again) AND on a fixed timer (see
+ * retryOfflineQueuePeriodically) so a queue doesn't just sit untouched on
+ * days with few/no successful captures to piggyback a retry on.
  */
 async function flushOfflineQueue(): Promise<void> {
-  if (offlineSyncQueue.length === 0) return;
+  const queue = loadOfflineQueue();
+  if (queue.length === 0) return;
 
-  console.log(`[CaptureService] Flushing ${offlineSyncQueue.length} offline queued screenshots to MongoDB Atlas...`);
-  const queueCopy = [...offlineSyncQueue];
-  offlineSyncQueue = [];
+  console.log(`[CaptureService] Flushing ${queue.length} offline-queued screenshot(s) to the admin PC...`);
+  const stillQueued: ScreenshotRecord[] = [];
 
-  for (const record of queueCopy) {
+  for (const record of queue) {
     try {
-      await fetch('http://localhost:3000/api/v1/screenshots/capture', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userName: record.userName,
-          userId: record.userId,
-          userRole: record.userRole,
-          imageUrl: record.imageUrl,
-          activeWindowName: record.activeWindowName,
-          timestamp: record.timestamp,
-          date: record.date,
-          isIdle: record.isIdle,
-        }),
-      });
+      await postScreenshotToAdminPc(record);
       record.syncStatus = 'ONLINE';
-    } catch (e) {
-      offlineSyncQueue.push(record);
+    } catch {
+      stillQueued.push(record);
     }
   }
+
+  saveOfflineQueue(stillQueued);
+  if (stillQueued.length < queue.length) {
+    console.log(`[CaptureService] Flushed ${queue.length - stillQueued.length} screenshot(s); ${stillQueued.length} still queued.`);
+  }
+}
+
+function retryOfflineQueuePeriodically(): void {
+  if (offlineQueueRetryTimer) clearInterval(offlineQueueRetryTimer);
+  offlineQueueRetryTimer = setInterval(() => void flushOfflineQueue(), OFFLINE_QUEUE_RETRY_MS);
 }
 
 /**
@@ -316,5 +374,11 @@ export function registerCaptureIpcHandlers(): void {
   // Start 5-minute automated background loop (a no-op each tick until a
   // real employee context is set via set-monitor-employee-context)
   startAutomated5MinScreenCaptureLoop(5);
+
+  // Retry any screenshots queued while the admin PC was unreachable, both
+  // right now (in case some were already queued from a previous run) and
+  // on a recurring timer from then on.
+  void flushOfflineQueue();
+  retryOfflineQueuePeriodically();
 }
 
