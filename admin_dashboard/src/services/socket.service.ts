@@ -4,7 +4,10 @@
 import { io, Socket } from 'socket.io-client';
 import { apiService } from './api.service';
 
-const SOCKET_URL = 'http://localhost:3000';
+// Overridable at build time (see .env.production) - must point at the same
+// host as api.service.ts's API_BASE_URL (minus the /api/v1 prefix), since
+// MonitorGateway lives on the main backend, not a separate service.
+const SOCKET_URL = (import.meta as any).env?.VITE_SOCKET_URL || 'http://localhost:3000';
 
 class SocketService {
   private socket: Socket | null = null;

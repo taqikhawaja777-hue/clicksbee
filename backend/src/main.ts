@@ -26,7 +26,21 @@ async function bootstrap() {
     .filter(Boolean);
 
   app.enableCors({
-    origin: frontendOrigins,
+    // A packaged Electron app loads its renderer via loadFile() (file://),
+    // not a real http(s) origin - Chromium sends no Origin header at all
+    // for those requests (unlike the Vite dev server's http://localhost:5173,
+    // which does and still needs to match frontendOrigins below). A plain
+    // origin array rejects a request with no Origin header outright, which
+    // would mean the packaged Windows app could never reach this backend at
+    // all - so first allow the "no Origin header" case explicitly, then
+    // fall back to the normal allowlist for anything that does send one.
+    origin: (origin, callback) => {
+      if (!origin || frontendOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'), false);
+      }
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });

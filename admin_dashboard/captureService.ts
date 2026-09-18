@@ -2,6 +2,7 @@ import { app, desktopCapturer, powerMonitor, ipcMain, BrowserWindow } from 'elec
 import fs from 'fs';
 import path from 'path';
 import { getLocalSettings } from './localSettings';
+import { BACKEND_URL } from './serverConfig';
 
 export interface ScreenshotRecord {
   id: string;
@@ -299,7 +300,7 @@ async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
     if (!sources || sources.length === 0) return;
 
     const imageBase64 = sources[0].thumbnail.toDataURL();
-    const response = await fetch('http://localhost:3000/api/v1/monitor/analyze', {
+    const response = await fetch(`${BACKEND_URL}/api/v1/monitor/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

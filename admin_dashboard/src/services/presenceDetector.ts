@@ -51,6 +51,7 @@
  * and still boolean-only/never recorded as video.
  */
 import * as faceapi from 'face-api.js';
+import { PRODUCTIVITY_API_BASE_URL } from './productivityApi.service';
 
 const MODEL_URL = './models';
 const POLL_INTERVAL_MS = 20000; // widened for CPU headroom on 2-core/4-thread laptops - no longer exactly matches PRESENCE_POLL_INTERVAL_SECONDS server-side (15s), but that constant only sets the assumed trailing-gap duration for the last row in a summary window, so this stays a bounded, minor approximation rather than a real mismatch
@@ -376,11 +377,11 @@ async function getSystemIdleSeconds(): Promise<{ idleSeconds: number; idleThresh
 class PresenceDetectionService {
   private isRunning = false;
   private employeeId = '';
-  private apiBaseUrl = 'http://localhost:8000';
+  private apiBaseUrl = PRODUCTIVITY_API_BASE_URL;
   private timer: ReturnType<typeof setInterval> | null = null;
   private wasOnBreak = false;
 
-  public start(employeeId: string, apiBaseUrl: string = 'http://localhost:8000'): void {
+  public start(employeeId: string, apiBaseUrl: string = PRODUCTIVITY_API_BASE_URL): void {
     if (this.isRunning) {
       if (this.employeeId === employeeId) return;
       // A different employee started a session without this one ever

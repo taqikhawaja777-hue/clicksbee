@@ -2,7 +2,16 @@
  * API Service — Axios instance with JWT interceptor and base URL
  */
 
-const API_BASE_URL = 'http://localhost:3000/api/v1';
+// Overridable at build time (see .env.production) so the packaged Windows
+// app talks to the real deployed backend instead of this dev-only default -
+// same pattern productivityApi.service.ts already uses for its own URL.
+const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
+
+// Bare origin (no /api/v1 suffix), derived from the same single source of
+// truth above - for the handful of components that build backend URLs
+// directly instead of going through this service (attachment links,
+// direct employees-list fetches, etc.).
+export const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
 
 const ACCESS_TOKEN_KEY = 'auth_token';
 const REFRESH_TOKEN_KEY = 'auth_refresh_token';

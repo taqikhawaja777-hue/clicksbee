@@ -35,13 +35,14 @@
  * against a test machine; nothing else needs to change.
  */
 import { powerMonitor, ipcMain } from 'electron';
+import { PRODUCTIVITY_SERVICE_URL } from './serverConfig';
 
 export type ActiveAppLabel = 'Cisco Jabber' | 'Wildix' | 'Other';
 
 const IDLE_THRESHOLD_SECONDS = 300; // 5 minutes, per spec (configurable)
 const POLL_INTERVAL_MS = 20000; // 20s, within the requested 15-30s range
 const BATCH_INTERVAL_MS = 90000; // 90s, within the requested 1-2 minute range
-const API_BASE_URL_DEFAULT = 'http://localhost:8000';
+const API_BASE_URL_DEFAULT = PRODUCTIVITY_SERVICE_URL;
 
 // Best-effort process/window-name signatures. Verify against a real
 // install of each app on a target Windows machine and adjust here — this

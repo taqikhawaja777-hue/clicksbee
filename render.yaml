@@ -1,0 +1,78 @@
+# Render Blueprint - deploys both backend services from this repo.
+# https://render.com/docs/blueprint-spec
+#
+# This repo is PUBLIC, so no secret values are written here - every
+# `sync: false` var is left blank in the dashboard for you to fill in by
+# hand when you apply this blueprint (Render prompts for each one). Never
+# put a real secret value directly in this file.
+#
+# Service names below (clicksbee-backend, clicksbee-productivity) become
+# the actual URLs (https://<name>.onrender.com) - they're referenced
+# directly in admin_dashboard/.env.production and serverConfig.ts, so
+# don't rename them here without updating those too.
+services:
+  - type: web
+    name: clicksbee-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false # MongoDB Atlas connection string
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_EXPIRATION
+        value: 15m
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_REFRESH_EXPIRATION
+        value: 7d
+      - key: API_PREFIX
+        value: api/v1
+      - key: FRONTEND_URL
+        value: http://localhost:5173 # dev Vite server only - the packaged app sends no Origin header at all, see backend/src/main.ts's CORS handler
+      - key: REDIS_URL
+        sync: false # optional - RedisService falls back to an in-memory cache if unset/unreachable, see backend/src/redis/redis.service.ts
+      - key: STORAGE_PATH
+        value: ./storage
+      - key: MAX_FILE_SIZE
+        value: "10485760"
+      - key: SCREENSHOT_RETENTION_DAYS
+        value: "30"
+      - key: ACTIVITY_RETENTION_DAYS
+        value: "90"
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: llama-3.3-70b-versatile
+      - key: LLM_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_VISION_MODEL
+        value: gemini-flash-lite-latest
+
+  - type: web
+    name: clicksbee-productivity
+    runtime: docker
+    dockerfilePath: ./productivity_service/Dockerfile
+    dockerContext: ./productivity_service
+    plan: starter # NOT free - the free tier spins down after 15 min idle, which would silently stop the APScheduler cron jobs (scheduled breaks) from firing at all
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false # the service_role secret key, not the anon/publishable one
+      - key: CORS_ORIGINS
+        value: "*" # packaged Electron app sends no Origin header; Starlette's CORSMiddleware echoes the real origin back instead of a literal "*" when allow_credentials=True, so this is safe
+      - key: JIBBLE_CLIENT_ID
+        value: ""
+      - key: JIBBLE_CLIENT_SECRET
+        value: ""
+      - key: JIBBLE_ORGANIZATION_ID
+        value: ""
+      - key: JIBBLE_SYNC_INTERVAL_MINUTES
+        value: "5"

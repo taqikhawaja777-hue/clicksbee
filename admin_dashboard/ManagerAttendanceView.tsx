@@ -14,6 +14,7 @@ import {
   Check
 } from 'lucide-react';
 import { productivityApiService } from './src/services/productivityApi.service';
+import { API_ORIGIN } from './src/services/api.service';
 
 export interface MonthlyAttendancePoint {
   month: string;
@@ -58,7 +59,7 @@ export const ManagerAttendanceView: React.FC = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const empRes = await fetch('http://localhost:3000/api/v1/employees/all');
+        const empRes = await fetch(`${API_ORIGIN}/api/v1/employees/all`);
         const empJson = await empRes.json();
         const employeesList: any[] = empJson?.data?.data || [];
         const departmentByName = new Map(employeesList.map((e) => [e.name, e.department] as const));

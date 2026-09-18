@@ -15,12 +15,14 @@
     "build": "npm run build:all && node scripts/run-electron-builder.js",
     "build:win": "npm run build:all && node scripts/run-electron-builder.js --win",
     "dist": "npm run build:win",
+    "release:win": "npm run build:all && node scripts/run-electron-builder.js --win --publish always",
     "typecheck": "tsc --noEmit",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "preview": "vite preview"
   },
   "dependencies": {
     "active-win": "^8.2.1",
+    "electron-updater": "^6.8.9",
     "face-api.js": "^0.22.2",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
@@ -87,6 +89,11 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "WorkTrackPro Agent"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "taqikhawaja777-hue",
+      "repo": "clicksbee"
     }
   },
   "allowScripts": {

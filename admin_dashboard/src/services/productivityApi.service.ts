@@ -9,7 +9,7 @@
  * only displays trackedMs/score as returned by the backend.
  */
 
-const PRODUCTIVITY_API_BASE_URL =
+export const PRODUCTIVITY_API_BASE_URL =
   (import.meta as any).env?.VITE_PRODUCTIVITY_API_URL || 'http://localhost:8000';
 
 export interface TaskProductivity {

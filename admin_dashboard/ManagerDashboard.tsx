@@ -14,6 +14,7 @@ import { WeeklyAttendanceAnalytics, AttendanceAnalyticsData } from './WeeklyAtte
 import { EmployeeStatusOverviewCards } from './EmployeeStatusOverviewCards';
 import { EmployeeDirectoryTable } from './EmployeeDirectoryTable';
 import { productivityApiService } from './src/services/productivityApi.service';
+import { API_ORIGIN } from './src/services/api.service';
 
 interface ManagerDashboardProps {
   activeNav?: string;
@@ -61,7 +62,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ activeNav = 
 
   React.useEffect(() => {
     const fetchEmployeeCounts = () => {
-      fetch('http://localhost:3000/api/v1/employees')
+      fetch(`${API_ORIGIN}/api/v1/employees`)
         .then((res) => res.json())
         // The real response is wrapped one level deeper than this used to
         // check for - {success, data: {totalCount, activeCount, data: []}}

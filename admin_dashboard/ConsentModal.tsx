@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ShieldCheck, Lock, Eye, Clock, Trash2, PauseCircle, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { API_ORIGIN } from './src/services/api.service';
 
 interface ConsentModalProps {
   policyVersion?: string;
@@ -19,7 +20,7 @@ export const ConsentModal: React.FC<ConsentModalProps> = ({
 
     try {
       // Record consent on backend
-      await fetch('http://localhost:3000/api/v1/consent/record', {
+      await fetch(`${API_ORIGIN}/api/v1/consent/record`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

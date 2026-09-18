@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Bell, Send, ShieldAlert, CheckCircle2, Clock, Coffee, Camera, ClipboardList, MessageSquare, AlertTriangle, Users, Paperclip, FileText, X } from 'lucide-react';
-import { apiService } from './src/services/api.service';
+import { apiService, API_ORIGIN } from './src/services/api.service';
 import { useEmployee } from './EmployeeContext';
 
 interface NotificationItem {
@@ -351,7 +351,7 @@ export const NotificationsPageView: React.FC = () => {
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{item.message}</p>
                   {item.attachmentUrl && (
                     <a
-                      href={`http://localhost:3000${item.attachmentUrl}`}
+                      href={`${API_ORIGIN}${item.attachmentUrl}`}
                       target="_blank"
                       rel="noreferrer"
                       onClick={(e) => e.stopPropagation()}

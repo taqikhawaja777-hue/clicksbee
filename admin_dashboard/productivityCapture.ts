@@ -11,6 +11,7 @@
  *   per raw event.
  */
 import { powerMonitor, ipcMain, BrowserWindow } from 'electron';
+import { PRODUCTIVITY_SERVICE_URL } from './serverConfig';
 
 interface ActivitySegment {
   appName: string | null;
@@ -35,7 +36,7 @@ class ProductivityCaptureService {
   private isCapturing = false;
   private taskId = '';
   private employeeId = '';
-  private apiBaseUrl = 'http://localhost:8000';
+  private apiBaseUrl = PRODUCTIVITY_SERVICE_URL;
 
   private pollTimer: NodeJS.Timeout | null = null;
   private batchTimer: NodeJS.Timeout | null = null;
@@ -46,7 +47,7 @@ class ProductivityCaptureService {
   /**
    * Start capturing activity for a task session.
    */
-  public start(taskId: string, employeeId: string, apiBaseUrl: string = 'http://localhost:8000'): void {
+  public start(taskId: string, employeeId: string, apiBaseUrl: string = PRODUCTIVITY_SERVICE_URL): void {
     if (this.isCapturing) {
       console.log('[ProductivityCapture] Already capturing, ignoring duplicate start.');
       return;

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { apiService } from './src/services/api.service';
+import { apiService, API_ORIGIN } from './src/services/api.service';
 import { socketService } from './src/services/socket.service';
 import { productivityApiService } from './src/services/productivityApi.service';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
@@ -557,7 +557,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }));
 
     try {
-      const listRes = await fetch('http://localhost:3000/api/v1/employees/all');
+      const listRes = await fetch(`${API_ORIGIN}/api/v1/employees/all`);
       if (listRes.ok) {
         const json = await listRes.json();
         const emps = extractEmployeeArray(json);
@@ -566,7 +566,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           (e.name && state.user.name && e.name.toLowerCase().includes(state.user.name.toLowerCase()))
         );
         if (target && target.id) {
-          await fetch(`http://localhost:3000/api/v1/employees/${target.id}/check-in`, { method: 'POST' });
+          await fetch(`${API_ORIGIN}/api/v1/employees/${target.id}/check-in`, { method: 'POST' });
         }
       }
     } catch (e) {
@@ -629,7 +629,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       // entry, and the Logs page's Checked Out rows, both silently missing
       // it) even though the user genuinely checked out. Mirrors
       // handleCheckInImpl's already-correct awaited pattern above.
-      const listRes = await fetch('http://localhost:3000/api/v1/employees/all');
+      const listRes = await fetch(`${API_ORIGIN}/api/v1/employees/all`);
       if (listRes.ok) {
         const json = await listRes.json();
         const emps = extractEmployeeArray(json);
@@ -638,7 +638,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           (e.name && state.user.name && e.name.toLowerCase().includes(state.user.name.toLowerCase()))
         );
         if (target && target.id) {
-          await fetch(`http://localhost:3000/api/v1/employees/${target.id}/check-out`, { method: 'POST' });
+          await fetch(`${API_ORIGIN}/api/v1/employees/${target.id}/check-out`, { method: 'POST' });
         }
       }
     } catch (e) {
@@ -932,7 +932,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const cleanLastName = lastName.trim();
 
     try {
-      const res = await fetch('http://localhost:3000/api/v1/auth/register', {
+      const res = await fetch(`${API_ORIGIN}/api/v1/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -969,7 +969,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const cleanEmail = email.toLowerCase().trim();
 
     try {
-      const res = await fetch('http://localhost:3000/api/v1/auth/login', {
+      const res = await fetch(`${API_ORIGIN}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

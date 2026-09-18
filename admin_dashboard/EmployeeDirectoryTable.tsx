@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, Plus, Edit2, Trash2, MoreVertical, ChevronDown } from 'lucide-react';
 import { productivityApiService, EmployeeIdleStatus, DailyReportRow } from './src/services/productivityApi.service';
+import { API_ORIGIN } from './src/services/api.service';
 
 const DIRECTORY_POLL_INTERVAL_MS = 30000;
 
@@ -45,7 +46,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
 
   const fetchEmployeesFromApi = async () => {
     try {
-      const res = await fetch('http://localhost:3000/api/v1/employees');
+      const res = await fetch(`${API_ORIGIN}/api/v1/employees`);
       if (res.ok) {
         const json = await res.json();
         let list: any[] = [];
@@ -200,7 +201,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
     if (!editingEmployee) return;
     setIsSavingEdit(true);
     try {
-      const res = await fetch(`http://localhost:3000/api/v1/employees/${editingEmployee.id}`, {
+      const res = await fetch(`${API_ORIGIN}/api/v1/employees/${editingEmployee.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ departmentName: editDept, designation: editDesignation || undefined, isActive: editIsActive }),

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, session } from 'electron';
+import { autoUpdater } from 'electron-updater';
 import path from 'path';
 import os from 'os';
 import { registerCaptureIpcHandlers } from './captureService';
@@ -95,6 +96,29 @@ app.whenReady().then(() => {
   startScreenshotCleanupSweep();
 
   createWindow();
+
+  // Auto-update from this repo's GitHub Releases (see package.json's
+  // build.publish config) - only meaningful for a real packaged build
+  // (electron-builder generates the app-update.yml this reads; a dev run
+  // has no such file and no installer to update in place). Only the NSIS
+  // installer target supports being updated this way - the portable .exe
+  // target has no installed location to update into, so this silently
+  // finds no update to apply there. checkForUpdatesAndNotify() downloads
+  // in the background and shows a native OS notification once ready; the
+  // update then applies on the app's next normal restart, never forcing
+  // one mid-shift.
+  if (process.env.NODE_ENV !== 'development') {
+    const checkForUpdates = () => {
+      autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+        console.warn('[AutoUpdater] Update check failed:', err);
+      });
+    };
+    autoUpdater.on('error', (err) => console.warn('[AutoUpdater] Error:', err));
+    autoUpdater.on('update-available', (info) => console.log('[AutoUpdater] Update available:', info.version));
+    autoUpdater.on('update-downloaded', (info) => console.log('[AutoUpdater] Update downloaded, will install on next restart:', info.version));
+    checkForUpdates();
+    setInterval(checkForUpdates, 4 * 60 * 60 * 1000); // re-check every 4h - this app never quits on its own
+  }
 });
 
 app.on('window-all-closed', () => {

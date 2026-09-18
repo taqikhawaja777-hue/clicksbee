@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# Not a secret - just the production build's public server URLs, baked into
+# the renderer bundle at build time and shipped inside the packaged app
+# regardless (see admin_dashboard/.env.production's own header comment).
+!admin_dashboard/.env.production
 
 # Dependencies
 node_modules/

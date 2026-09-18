@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { productivityApiService } from './src/services/productivityApi.service';
+import { API_ORIGIN } from './src/services/api.service';
 
 interface MetricCardProps {
   label: string;
@@ -18,7 +19,7 @@ export const EmployeeStatusOverviewCards: React.FC = () => {
   useEffect(() => {
     const fetchCounts = async () => {
       try {
-        const res = await fetch('http://localhost:3000/api/v1/employees/all');
+        const res = await fetch(`${API_ORIGIN}/api/v1/employees/all`);
         const json = await res.json();
         let list: any[] = [];
         if (Array.isArray(json)) list = json;
