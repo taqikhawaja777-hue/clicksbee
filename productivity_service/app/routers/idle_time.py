@@ -1,11 +1,11 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 
 from ..deps import get_productivity_service
 from ..schemas.idle_time import EmployeeIdleStatusOut, IdleTimeLogIn, IdleTimeLogOut, IdleTimeSummaryOut
-from ..services.productivity import ProductivityService
+from ..services.productivity import ProductivityService, shift_day
 from ..services.notify_client import notify_system_event
 
 router = APIRouter(prefix="/api/idle-time", tags=["idle-time"])
@@ -51,7 +51,7 @@ def get_idle_time_summary(
     """Aggregated today-view for the Manager Supervisor Portal overview.
     Must be declared before `/{employee_id}` so "summary" isn't swallowed by
     that path param."""
-    rows = service.get_idle_time_summary(date.today())
+    rows = service.get_idle_time_summary(shift_day(datetime.now(timezone.utc)))
     employees = [EmployeeIdleStatusOut(**row) for row in rows]
     avg = (
         round(sum(e.productivity_percentage for e in employees) / len(employees), 2)

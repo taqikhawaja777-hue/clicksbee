@@ -16,6 +16,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Role } from '@prisma/client';
+import { getShiftDayString } from '../common/utils/shift-day.util';
 
 @ApiTags('Productivity Engine')
 @ApiBearerAuth()
@@ -31,7 +32,7 @@ export class ProductivityController {
     @CurrentUser('organizationId') organizationId: string,
     @Query('date') date?: string,
   ) {
-    const targetDate = date || new Date().toISOString().split('T')[0];
+    const targetDate = date || getShiftDayString();
     return this.productivityService.calculateUserDailyProductivity(userId, organizationId, targetDate);
   }
 

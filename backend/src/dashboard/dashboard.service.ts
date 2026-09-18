@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { getShiftDayString } from '../common/utils/shift-day.util';
 
 @Injectable()
 export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getOverview(organizationId: string) {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getShiftDayString();
 
     const [
       activeProjects,
@@ -98,7 +99,7 @@ export class DashboardService {
   }
 
   async getProductivityBreakdown(organizationId: string) {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getShiftDayString();
     const records = await this.prisma.productivityRecord.findMany({
       where: { organizationId, date: todayStr },
       include: { user: { select: { id: true, firstName: true, lastName: true } } },
@@ -111,7 +112,7 @@ export class DashboardService {
   }
 
   async getAttendanceOverview(organizationId: string) {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getShiftDayString();
     return this.prisma.attendance.findMany({
       where: { organizationId, date: todayStr },
       include: { user: { select: { id: true, firstName: true, lastName: true, role: true } } },

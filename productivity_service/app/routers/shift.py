@@ -11,22 +11,23 @@ from ..schemas.shift import (
     ShiftSummaryOut,
     TriggerScheduledBreakIn,
 )
-from ..services.productivity import KARACHI_TZ, ProductivityService
+from ..services.productivity import KARACHI_TZ, ProductivityService, shift_day
 from ..services.notify_client import notify_system_event
 
 router = APIRouter(prefix="/api/shift", tags=["shift"])
 
 
 def _karachi_today() -> date:
-    return datetime.now(KARACHI_TZ).date()
+    return shift_day(datetime.now(KARACHI_TZ))
 
 
 @router.get("/summary/{employee_id}", response_model=ShiftSummaryOut)
 def get_summary(
     employee_id: UUID,
-    # Shift/break "days" - and, as of the KARACHI_TZ fix in
-    # productivity.py, presence-summary days too - follow the org's fixed
-    # timezone, matching the Zuhar/Asar-named break windows.
+    # Shift/break "days" - and, as of the shift_day() fix in
+    # productivity.py, presence-summary days too - roll over at the shift's
+    # 19:00 end, not local midnight, matching the Zuhar/Asar-named break
+    # windows and admin_dashboard's idleTimeTracker.ts.
     on_date: date = Query(default_factory=_karachi_today, alias="date"),
     service: ProductivityService = Depends(get_productivity_service),
 ) -> ShiftSummaryOut:
@@ -89,7 +90,7 @@ def check_out(
     if employee:
         now = datetime.now(KARACHI_TZ)
         now_str = now.strftime("%I:%M %p").lstrip("0")
-        summary = service.get_shift_summary(payload.employee_id, now.date())
+        summary = service.get_shift_summary(payload.employee_id, shift_day(now))
         total_seconds = summary.get("shift_duration_seconds", 0)
         hours, minutes = divmod(total_seconds // 60, 60)
         duration_str = f"{hours}h {minutes}m"

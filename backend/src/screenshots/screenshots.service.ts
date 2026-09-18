@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { getShiftDayString } from '../common/utils/shift-day.util';
 import { StreamableFile } from '@nestjs/common';
 import { AiVisionEvaluatorService } from '../services/aiVisionEvaluator';
 import * as fs from 'fs';
@@ -102,7 +103,7 @@ export class ScreenshotsService {
       userRole: dto.userRole || 'Software Engineer',
       timestamp: dto.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isoTimestamp: record.capturedAt.toISOString(),
-      date: dto.date || record.capturedAt.toISOString().split('T')[0],
+      date: dto.date || getShiftDayString(record.capturedAt),
       imageUrl: record.fileUrl,
       isIdle: !!dto.isIdle,
       activeWindowName: dto.activeWindowName || 'Active Shift Session (File Explorer / Desktop)',
@@ -130,7 +131,7 @@ export class ScreenshotsService {
       userRole: item.user?.role === 'ADMIN' || item.user?.role === 'MANAGER' ? 'Manager' : 'Full Stack Engineer',
       timestamp: item.capturedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isoTimestamp: item.capturedAt.toISOString(),
-      date: item.capturedAt.toISOString().split('T')[0],
+      date: getShiftDayString(item.capturedAt),
       imageUrl: item.fileUrl,
       isIdle: false,
       activeWindowName: item.activeWindowName || 'Active Workstation Screen (File Explorer / My Computer)',

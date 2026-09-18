@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from ..db import get_supabase_client
-from ..services.productivity import KARACHI_TZ, ProductivityService, _parse_iso
+from ..services.productivity import ProductivityService, _parse_iso, shift_day
 from ..services.notify_client import notify_system_event
 
 logger = logging.getLogger("scheduled_breaks")
@@ -28,7 +28,7 @@ BREAK_WINDOWS = [
 
 
 def _karachi_today_str(now: datetime) -> str:
-    return now.astimezone(KARACHI_TZ).date().isoformat()
+    return shift_day(now).isoformat()
 
 
 def start_scheduled_break(break_key: str) -> dict:

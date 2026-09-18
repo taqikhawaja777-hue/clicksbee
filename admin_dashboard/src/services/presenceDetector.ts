@@ -103,11 +103,24 @@ function ensureModelLoaded(): Promise<void> {
       // via its own separate IS_NODE flag (typeof process !== 'undefined'),
       // independent of face-api.js's env system above.
       faceapi.tf.env().set('IS_NODE', false);
-      // Force the CPU backend - a single 15-30s-interval face check has no
-      // need for WebGL, and it sidesteps that backend's own Electron
-      // incompatibilities as a third layer of defense.
-      await faceapi.tf.setBackend('cpu');
-      await faceapi.tf.ready();
+      // Try WebGL first - CPU-backend inference runs as synchronous,
+      // blocking JS (no yielding back to the event loop mid-computation),
+      // which was freezing clicks/scrolls for the inference's whole
+      // duration on integrated graphics. WebGL offloads the compute to the
+      // GPU instead. This app forces Ozone's X11 backend on Linux now
+      // (see main.ts), which may have already resolved the "backend's own
+      // Electron incompatibilities" WebGL used to hit here - if WebGL
+      // still fails to initialize on some machine/driver combo, fall back
+      // to the known-working CPU backend rather than crash presence
+      // detection entirely.
+      try {
+        await faceapi.tf.setBackend('webgl');
+        await faceapi.tf.ready();
+      } catch (err) {
+        console.warn('[PresenceDetector] WebGL backend failed to initialize, falling back to CPU:', err);
+        await faceapi.tf.setBackend('cpu');
+        await faceapi.tf.ready();
+      }
       console.log(`[PresenceDetector] TensorFlow.js backend active: ${faceapi.tf.getBackend()}`);
       await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
 

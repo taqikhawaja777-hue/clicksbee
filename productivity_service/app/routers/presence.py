@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..deps import get_productivity_service
-from ..services.productivity import KARACHI_TZ
+from ..services.productivity import KARACHI_TZ, shift_day
 from ..schemas.presence import (
     CameraConsentIn,
     CameraConsentOut,
@@ -95,17 +95,17 @@ def log_presence(
 @router.get("/summary/{employee_id}", response_model=PresenceSummaryOut)
 def get_summary(
     employee_id: UUID,
-    # get_presence_summary() now builds its day-range query in Asia/Karachi
-    # (the org's fixed reference timezone for "what day is it," shared with
-    # shift_events/idle_time_logs - see KARACHI_TZ in productivity.py), so
-    # the default here must match. It used to default to UTC-today, which
-    # was itself a fix for defaulting to the server's *local* system date -
-    # but once get_shift_summary started calling this function with a
-    # Karachi-local day, a UTC default here would disagree with every other
-    # caller for several hours around each local midnight (confirmed: this
-    # exact mismatch made the Presence Verification card show "no checks
-    # logged" while checks were actively landing).
-    on_date: date = Query(default_factory=lambda: datetime.now(KARACHI_TZ).date(), alias="date"),
+    # get_presence_summary() now builds its day-range query using shift_day()
+    # (the shift's fixed 19:00 Asia/Karachi rollover, shared with
+    # shift_events/idle_time_logs - see productivity.py), so the default
+    # here must match. It used to default to UTC-today, which was itself a
+    # fix for defaulting to the server's *local* system date - but once
+    # get_shift_summary started calling this function with a Karachi-local
+    # day, a UTC default here would disagree with every other caller for
+    # several hours around each boundary (confirmed: this exact mismatch
+    # made the Presence Verification card show "no checks logged" while
+    # checks were actively landing).
+    on_date: date = Query(default_factory=lambda: shift_day(datetime.now(KARACHI_TZ)), alias="date"),
     service: ProductivityService = Depends(get_productivity_service),
 ) -> PresenceSummaryOut:
     return PresenceSummaryOut(**service.get_presence_summary(employee_id, on_date))

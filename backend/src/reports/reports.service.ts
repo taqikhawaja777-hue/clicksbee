@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { getShiftDayString } from '../common/utils/shift-day.util';
 
 @Injectable()
 export class ReportsService {
@@ -43,7 +44,7 @@ export class ReportsService {
   }
 
   async getDailyReport(organizationId: string, dateStr?: string) {
-    const targetDate = dateStr || new Date().toISOString().split('T')[0];
+    const targetDate = dateStr || getShiftDayString();
     const [attendance, productivity] = await Promise.all([
       this.prisma.attendance.findMany({
         where: { organizationId, date: targetDate },

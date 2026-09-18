@@ -8,6 +8,18 @@ import { registerLocalSettingsIpcHandlers } from './localSettings';
 import { registerLocalScreenshotServerIpcHandlers, startLocalScreenshotServer } from './localScreenshotServer';
 import { startScreenshotCleanupSweep } from './screenshotCleanup';
 
+// Electron's default (native Wayland) Ozone backend has known GPU
+// compositing bugs on this machine's Intel/Mesa/GNOME-Wayland stack, which
+// show up as severely laggy clicks/scrolls - the renderer ends up doing
+// software rendering instead of GPU-accelerated compositing. VSCode itself
+// forces the same X11 (XWayland) fallback on this system for the same
+// reason (visible in its own process args). Must be set before app is
+// ready. Windows (the real deployment target) has no Ozone/Wayland
+// concept, so this is a no-op there.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('ozone-platform', 'x11');
+}
+
 function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1280,

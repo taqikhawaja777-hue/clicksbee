@@ -17,8 +17,9 @@
  *   per-app app_focus_seconds) and POSTs the current day-to-date snapshot
  *   every 1-2 minutes (BATCH_INTERVAL_MS) — a batched snapshot, not a delta,
  *   so a failed/retried POST or a client restart can never double-count.
- * - Resets accumulators at local midnight so a long-running session doesn't
- *   bleed one day's totals into the next.
+ * - Resets accumulators at the shift's 19:00 Asia/Karachi rollover (see
+ *   getShiftDayKey below), not local midnight, so a long-running session
+ *   doesn't bleed one shift-day's totals into the next.
  *
  * IMPLEMENTATION NOTE — on-call detection limitation:
  * Cisco Jabber and Wildix both expose desktop APIs in principle (Jabber has
@@ -73,10 +74,30 @@ async function checkOnCallStatus(_appLabel: ActiveAppLabel): Promise<boolean> {
   return false;
 }
 
-function getLocalDateKey(d: Date = new Date()): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+// Asia/Karachi is a fixed UTC+5 offset year-round (Pakistan observes no
+// DST), so "Karachi wall-clock time" can be computed with plain
+// millisecond arithmetic instead of Intl/timezone-database lookups.
+const KARACHI_OFFSET_MS = 5 * 60 * 60 * 1000;
+const SHIFT_END_MINUTES_OF_DAY = 19 * 60; // 19:00 - the org's single fixed shift is 10:00-19:00
+
+// The shift-day bucket a timestamp belongs to: rolls over at the shift's
+// 19:00 Asia/Karachi end, not local midnight, so one shift's activity
+// stays under one day bucket. Must match shift_day() in
+// productivity_service/app/services/productivity.py exactly, or
+// idle_time_logs (written from here) would disagree with shift_events/
+// presence_logs (written server-side) on what day it is - computed
+// explicitly in Asia/Karachi rather than trusting the machine's own OS
+// timezone setting, so a deployed machine misconfigured to a different
+// zone can't silently desync from the server.
+function getShiftDayKey(d: Date = new Date()): string {
+  const karachi = new Date(d.getTime() + KARACHI_OFFSET_MS);
+  const minutesOfDay = karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
+  if (minutesOfDay >= SHIFT_END_MINUTES_OF_DAY) {
+    karachi.setUTCDate(karachi.getUTCDate() + 1);
+  }
+  const year = karachi.getUTCFullYear();
+  const month = String(karachi.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(karachi.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
@@ -88,7 +109,7 @@ class IdleTimeTracker {
   private pollTimer: NodeJS.Timeout | null = null;
   private batchTimer: NodeJS.Timeout | null = null;
 
-  private dateKey = getLocalDateKey();
+  private dateKey = getShiftDayKey();
   private activeSeconds = 0;
   private idleSeconds = 0;
   private appFocusSeconds: Record<string, number> = {};
@@ -116,7 +137,7 @@ class IdleTimeTracker {
     this.employeeId = employeeId;
     this.apiBaseUrl = apiBaseUrl.replace(/\/+$/, '');
     this.isTracking = true;
-    this.resetAccumulatorsForNewDay(getLocalDateKey());
+    this.resetAccumulatorsForNewDay(getShiftDayKey());
 
     console.log(`[IdleTimeTracker] Starting idle/active tracking for employeeId=${employeeId}`);
 
@@ -237,7 +258,7 @@ class IdleTimeTracker {
       return;
     }
 
-    const todayKey = getLocalDateKey();
+    const todayKey = getShiftDayKey();
     if (todayKey !== this.dateKey) {
       // Local midnight rolled over mid-session: flush yesterday's totals
       // one last time, then start today's accumulators from zero.

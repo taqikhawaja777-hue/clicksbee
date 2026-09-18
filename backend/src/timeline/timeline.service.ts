@@ -1,5 +1,6 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { getShiftDayString, getShiftDayWindow } from '../common/utils/shift-day.util';
 
 @Injectable()
 export class TimelineService {
@@ -16,9 +17,8 @@ export class TimelineService {
       throw new ForbiddenException('Access denied to other employee timeline');
     }
 
-    const dateFilter = dateStr || new Date().toISOString().split('T')[0];
-    const startOfDay = new Date(`${dateFilter}T00:00:00.000Z`);
-    const endOfDay = new Date(`${dateFilter}T23:59:59.999Z`);
+    const dateFilter = dateStr || getShiftDayString();
+    const { start: startOfDay, end: endOfDay } = getShiftDayWindow(dateFilter);
 
     const [attendance, workSessions, breakSessions, activityEvents, screenshots, tasks] =
       await Promise.all([

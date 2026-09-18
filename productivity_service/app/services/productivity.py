@@ -24,6 +24,38 @@ logger = logging.getLogger("productivity_service")
 # "today" even means). Matches the Zuhar/Asar-named scheduled break windows.
 KARACHI_TZ = ZoneInfo("Asia/Karachi")
 
+# The org's single fixed shift: 10:00-19:00 Asia/Karachi. The "day" bucket
+# every table in this feature keys on (shift_events, idle_time_logs,
+# presence_logs) rolls over at SHIFT_END, not local midnight - anything
+# logged before 19:00 Karachi time stays on today's date, anything at or
+# after 19:00 belongs to tomorrow's. This keeps one shift's activity under
+# one consistent day bucket even though the shift itself doesn't line up
+# with the calendar-day boundary, and matches admin_dashboard's
+# idleTimeTracker.ts, which computes the same client-side date key on the
+# same rule so the two never disagree on "today" the way UTC vs
+# Karachi-midnight used to (see the note above).
+SHIFT_START = time(10, 0)
+SHIFT_END = time(19, 0)
+
+
+def shift_day(dt: datetime) -> date:
+    """The shift-day bucket a timestamp (any tzinfo, including naive-UTC)
+    belongs to, per the SHIFT_END rollover rule above."""
+    local = dt.astimezone(KARACHI_TZ)
+    if local.time() >= SHIFT_END:
+        return local.date() + timedelta(days=1)
+    return local.date()
+
+
+def shift_day_window(day: date) -> tuple[datetime, datetime]:
+    """Inclusive [start, end] Asia/Karachi window for the given shift-day
+    bucket: SHIFT_END the previous calendar day through one microsecond
+    before SHIFT_END this calendar day - mirrors the old time.min/time.max
+    inclusive-bound convention so callers can keep using .gte()/.lte()."""
+    start = datetime.combine(day - timedelta(days=1), SHIFT_END, tzinfo=KARACHI_TZ)
+    end = datetime.combine(day, SHIFT_END, tzinfo=KARACHI_TZ) - timedelta(microseconds=1)
+    return start, end
+
 # A row not refreshed within this window is treated as "AWAY" (desktop
 # client closed/offline) on the live status card, rather than trusting a
 # possibly hours-stale last_active_app/last_is_idle snapshot. Comfortably
@@ -314,14 +346,13 @@ class ProductivityService:
         return sum(self._entry_duration_ms(row) for row in (resp.data or []))
 
     def get_employee_clocked_ms_today(self, employee_id: UUID, day: date) -> int:
-        start = datetime.combine(day, time.min, tzinfo=timezone.utc).isoformat()
-        end = datetime.combine(day, time.max, tzinfo=timezone.utc).isoformat()
+        start, end = shift_day_window(day)
         resp = (
             self.client.table("synced_time_entries")
             .select("duration_ms,entry_start,entry_end")
             .eq("employee_id", str(employee_id))
-            .gte("entry_start", start)
-            .lte("entry_start", end)
+            .gte("entry_start", start.isoformat())
+            .lte("entry_start", end.isoformat())
             .execute()
         )
         return sum(self._entry_duration_ms(row) for row in (resp.data or []))
@@ -337,7 +368,7 @@ class ProductivityService:
         else:
             employee_id = UUID(task["employee_id"])
             clocked_today = self.get_employee_clocked_ms_today(
-                employee_id, datetime.now(timezone.utc).date()
+                employee_id, shift_day(datetime.now(timezone.utc))
             )
             score = calculate_productivity(tracked_ms, employee_clocked_ms_today=clocked_today)
 
@@ -404,11 +435,11 @@ class ProductivityService:
             else 0.0
         )
 
-        today_start = datetime.now(timezone.utc).date().isoformat() + "T00:00:00Z"
+        today_start, _ = shift_day_window(shift_day(datetime.now(timezone.utc)))
         tickets_resp = (
             self.client.table("tickets")
             .select("id", count="exact")
-            .gte("created_at", today_start)
+            .gte("created_at", today_start.isoformat())
             .execute()
         )
         tickets_generated_today = tickets_resp.count or 0
@@ -816,22 +847,22 @@ class ProductivityService:
         }
 
     def get_presence_summary(self, employee_id: UUID, day: date) -> dict:
-        # Karachi-local day boundaries, not UTC: `day` is normally "today"
-        # per KARACHI_TZ (see the shift/idle-time routers' defaults), and
-        # presence_logs.occurred_at is a real timestamptz - Postgres
-        # compares it correctly against a +05:00-offset literal, no
-        # conversion needed on this end. Using UTC boundaries here while
-        # the rest of the app agrees on Karachi-day is exactly what caused
-        # a several-hour window around each local midnight where this
-        # returned zero rows despite presence checks actively landing.
-        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ).isoformat()
-        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ).isoformat()
+        # Shift-day boundaries (SHIFT_END rollover), not UTC and not plain
+        # Karachi midnight: `day` is normally "today" per shift_day() (see
+        # the shift/idle-time routers' defaults), and presence_logs.occurred_at
+        # is a real timestamptz - Postgres compares it correctly against a
+        # +05:00-offset literal, no conversion needed on this end. Using UTC
+        # boundaries here while the rest of the app agrees on the shift-day
+        # is exactly what caused a several-hour window around each boundary
+        # where this returned zero rows despite presence checks actively
+        # landing.
+        day_start, day_end = shift_day_window(day)
         resp = (
             self.client.table("presence_logs")
             .select("*")
             .eq("employee_id", str(employee_id))
-            .gte("occurred_at", day_start)
-            .lte("occurred_at", day_end)
+            .gte("occurred_at", day_start.isoformat())
+            .lte("occurred_at", day_end.isoformat())
             .order("occurred_at")
             .execute()
         )
@@ -924,7 +955,7 @@ class ProductivityService:
         # check-in" live numbers (resetting at each new check-in) without
         # changing how idle_time_logs itself accumulates - reports still
         # read that table's real whole-day cumulative total directly.
-        today = datetime.now(KARACHI_TZ).date().isoformat()
+        today = shift_day(datetime.now(timezone.utc)).isoformat()
         idle_rows = (
             self.client.table("idle_time_logs")
             .select("active_seconds,idle_seconds")
@@ -965,9 +996,7 @@ class ProductivityService:
         # through.
         if break_type == "WASHROOM":
             now = occurred_at or datetime.now(timezone.utc)
-            today_local = now.astimezone(KARACHI_TZ).date()
-            day_start = datetime.combine(today_local, time.min, tzinfo=KARACHI_TZ)
-            day_end = datetime.combine(today_local, time.max, tzinfo=KARACHI_TZ)
+            day_start, day_end = shift_day_window(shift_day(now))
             todays_events = (
                 self.client.table("shift_events")
                 .select("*")
@@ -1353,8 +1382,7 @@ class ProductivityService:
         # _compute_daily_report_row() computes for reports, so a live view
         # and a same-day report row can never disagree on this number
         # again.
-        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ)
-        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ)
+        day_start, day_end = shift_day_window(day)
         try:
             day_events = (
                 self.client.table("shift_events")
@@ -1583,8 +1611,7 @@ class ProductivityService:
         }
 
     def get_daily_report_row(self, employee_id: UUID, day: date) -> dict:
-        day_start = datetime.combine(day, time.min, tzinfo=KARACHI_TZ)
-        day_end = datetime.combine(day, time.max, tzinfo=KARACHI_TZ)
+        day_start, day_end = shift_day_window(day)
         try:
             events = (
                 self.client.table("shift_events")
@@ -1646,8 +1673,8 @@ class ProductivityService:
             # requested, since that's a deliberate choice by the caller.
             employees = [e for e in employees if e.get("role", "EMPLOYEE") == "EMPLOYEE"]
         days = self._karachi_date_range(start_date, end_date)
-        range_start = datetime.combine(start_date, time.min, tzinfo=KARACHI_TZ)
-        range_end = datetime.combine(end_date, time.max, tzinfo=KARACHI_TZ)
+        range_start, _ = shift_day_window(start_date)
+        _, range_end = shift_day_window(end_date)
         # Fetched once for the whole range/employee loop, not per employee
         # per day - weights/thresholds don't vary within one report.
         config = self.get_productivity_config()
@@ -1696,12 +1723,12 @@ class ProductivityService:
 
             events_by_date: dict[str, list[dict]] = {}
             for event in all_events:
-                key = _parse_iso(event["occurred_at"]).astimezone(KARACHI_TZ).date().isoformat()
+                key = shift_day(_parse_iso(event["occurred_at"])).isoformat()
                 events_by_date.setdefault(key, []).append(event)
 
             presence_by_date: dict[str, list[dict]] = {}
             for prow in all_presence_rows:
-                key = _parse_iso(prow["occurred_at"]).astimezone(KARACHI_TZ).date().isoformat()
+                key = shift_day(_parse_iso(prow["occurred_at"])).isoformat()
                 presence_by_date.setdefault(key, []).append(prow)
 
             for day in days:

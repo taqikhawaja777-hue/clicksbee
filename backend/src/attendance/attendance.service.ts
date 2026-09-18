@@ -7,14 +7,14 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { ClockInDto } from './dto/clock-in.dto';
 import { AttendanceStatus } from '@prisma/client';
+import { getShiftDayString } from '../common/utils/shift-day.util';
 
 @Injectable()
 export class AttendanceService {
   constructor(private readonly prisma: PrismaService) {}
 
   private getTodayString(): string {
-    const d = new Date();
-    return d.toISOString().split('T')[0];
+    return getShiftDayString();
   }
 
   async clockIn(userId: string, organizationId: string, dto: ClockInDto) {

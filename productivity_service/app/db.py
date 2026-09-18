@@ -29,10 +29,23 @@ def _patch_stale_connection_retry(postgrest_session: Any) -> None:
     processed server-side, so retrying (httpx hands a retry a fresh
     connection once the pool evicts the dead one) is safe, including for
     inserts.
+
+    Also covers LocalProtocolError("Invalid input StreamInputs.SEND_HEADERS in
+    state 5") - the same stale-connection-in-the-pool scenario, but hit via a
+    burst of concurrent requests (e.g. the dashboard firing several widget
+    fetches on mount) instead of an idle gap: the pool hands out a connection
+    already in a closed/half-closed HTTP/2 stream state, and writing a new
+    request onto it raises locally before anything reaches the server - so
+    retrying is just as safe here.
     """
     import httpx
 
-    retryable = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError)
+    retryable = (
+        httpx.RemoteProtocolError,
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.LocalProtocolError,
+    )
     original_request = postgrest_session.request
 
     @wraps(original_request)

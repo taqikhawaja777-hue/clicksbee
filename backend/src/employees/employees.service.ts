@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { CreateEmployeeDto, UpdateEmployeeDto } from './dto/employee.dto';
+import { getShiftDayString } from '../common/utils/shift-day.util';
 import * as argon2 from 'argon2';
 import * as bcrypt from 'bcryptjs';
 
@@ -322,7 +323,7 @@ export class EmployeesService {
       throw new NotFoundException('Employee not found');
     }
 
-    const dateStr = new Date().toISOString().split('T')[0];
+    const dateStr = getShiftDayString();
     const now = new Date();
 
     // 1. Create or update Attendance record
@@ -374,7 +375,7 @@ export class EmployeesService {
       throw new NotFoundException('Employee not found');
     }
 
-    const dateStr = new Date().toISOString().split('T')[0];
+    const dateStr = getShiftDayString();
     const now = new Date();
 
     // Update Attendance
