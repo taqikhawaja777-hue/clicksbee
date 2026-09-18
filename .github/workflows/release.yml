@@ -1,0 +1,33 @@
+name: Release Windows build
+
+# Manual only - run from the Actions tab ("Run workflow") or
+# `gh workflow run release.yml` whenever you're ready to ship a new
+# version to employees. Pushing to main never triggers this on its own.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # electron-builder's GitHub publish step creates a Release + uploads the installer
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: admin_dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Build and publish to GitHub Releases
+        run: npm run release:win
+        env:
+          # electron-builder's GitHub provider reads this automatically -
+          # GITHUB_TOKEN is provided by Actions itself, scoped to this repo
+          # only for the duration of this run. No manual token setup needed.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
