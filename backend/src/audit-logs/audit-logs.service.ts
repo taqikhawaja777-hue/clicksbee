@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { getShiftDayString, getShiftDayWindow } from '../common/utils/shift-day.util';
+import { getShiftDayString, getShiftDayWindow, isPastShiftEnd } from '../common/utils/shift-day.util';
 
 // "Other actions" NotificationTypes with no dedicated source collection of
 // their own - CHECK_IN/CHECK_OUT/TASK_ASSIGNED/TASK_COMPLETED also exist as
@@ -91,7 +91,7 @@ export class AuditLogsService {
 
     const [attendance, breaks, logins, tasksByCreated, tasksByCompleted, screenshots, notifications, users] =
       await Promise.all([
-        wants('CHECK_IN') || wants('CHECK_OUT')
+        wants('CHECK_IN') || wants('CHECK_OUT') || wants('OVERTIME_CHECK_IN')
           ? this.prisma.attendance.findMany({ where: { ...baseWhere, clockIn: { gte: start, lte: end } } })
           : Promise.resolve([]),
         wants('BREAK_START') || wants('BREAK_END')
@@ -137,8 +137,20 @@ export class AuditLogsService {
 
     attendance.forEach((a) => {
       const userName = nameOf.get(a.userId) || 'Unknown';
-      if (a.clockIn && wants('CHECK_IN')) {
-        rows.push({ id: `${a.id}-in`, userId: a.userId, userName, action: 'CHECK_IN', description: 'Checked in', timestamp: a.clockIn });
+      if (a.clockIn) {
+        // A check-in AT or AFTER the shift's own 19:00 end is arriving
+        // after the shift should already be over, not a normal check-in -
+        // relabeled as its own action instead of just "Checked in" so a
+        // manager can filter specifically for it. Same boundary
+        // getShiftDayString() rolls the calendar date over at, not a
+        // second/different definition of "late".
+        if (isPastShiftEnd(a.clockIn)) {
+          if (wants('OVERTIME_CHECK_IN')) {
+            rows.push({ id: `${a.id}-in`, userId: a.userId, userName, action: 'OVERTIME_CHECK_IN', description: 'Checked in after shift end (overtime)', timestamp: a.clockIn });
+          }
+        } else if (wants('CHECK_IN')) {
+          rows.push({ id: `${a.id}-in`, userId: a.userId, userName, action: 'CHECK_IN', description: 'Checked in', timestamp: a.clockIn });
+        }
       }
       if (a.clockOut && wants('CHECK_OUT')) {
         rows.push({ id: `${a.id}-out`, userId: a.userId, userName, action: 'CHECK_OUT', description: 'Checked out', timestamp: a.clockOut });

@@ -30,6 +30,19 @@ export function getShiftDayString(d: Date = new Date()): string {
 }
 
 /**
+ * Whether a moment falls at/after the shift's 19:00 Asia/Karachi end - the
+ * same boundary getShiftDayString() rolls the date over at, exposed as its
+ * own check for call sites that need to flag "this happened past shift
+ * end" (e.g. a post-7pm check-in counting as overtime) rather than bucket
+ * it into a day.
+ */
+export function isPastShiftEnd(d: Date): boolean {
+  const karachi = new Date(d.getTime() + KARACHI_OFFSET_MS);
+  const minutesOfDay = karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
+  return minutesOfDay >= SHIFT_END_MINUTES_OF_DAY;
+}
+
+/**
  * Inclusive [start, end] window, in real UTC instants, for a given
  * shift-day bucket string ("YYYY-MM-DD" as returned by getShiftDayString):
  * 19:00 Asia/Karachi the previous calendar day through one millisecond

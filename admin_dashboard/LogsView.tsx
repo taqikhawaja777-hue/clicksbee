@@ -22,6 +22,7 @@ interface EmployeeOption {
 const ACTION_OPTIONS: { value: string; label: string; color: string }[] = [
   { value: 'LOGIN', label: 'Logged In', color: 'bg-indigo-100/80 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300' },
   { value: 'CHECK_IN', label: 'Checked In', color: 'bg-emerald-100/80 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300' },
+  { value: 'OVERTIME_CHECK_IN', label: 'Overtime Check-In', color: 'bg-fuchsia-100/80 dark:bg-fuchsia-950/60 text-fuchsia-700 dark:text-fuchsia-300' },
   { value: 'CHECK_OUT', label: 'Checked Out', color: 'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300' },
   { value: 'BREAK_START', label: 'Break Started', color: 'bg-amber-100/80 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300' },
   { value: 'BREAK_END', label: 'Break Ended', color: 'bg-amber-100/80 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300' },
