@@ -1,5 +1,6 @@
 import { app, BrowserWindow, session } from 'electron';
 import path from 'path';
+import os from 'os';
 import { registerCaptureIpcHandlers } from './captureService';
 import { registerProductivityCaptureIpcHandlers } from './productivityCapture';
 import { registerIdleTimeTrackerIpcHandlers } from './idleTimeTracker';
@@ -42,6 +43,17 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Cooperative, not a hard cap: this only changes how Windows' scheduler
+  // arbitrates CPU time under contention (maps to SetPriorityClass on
+  // Windows, a nice adjustment on Linux/macOS) - on an idle machine this
+  // process still gets full CPU, it just yields first to foreground apps
+  // when the 2-core/4-thread laptops this runs on are actually busy.
+  try {
+    os.setPriority(process.pid, os.constants.priority.PRIORITY_BELOW_NORMAL);
+  } catch (err) {
+    console.warn('[main] Failed to lower process priority (platform/permissions may not allow it):', err);
+  }
+
   // Without an explicit handler, Electron has no default UI to answer a
   // getUserMedia() camera/mic permission request (unlike a real browser) -
   // on some versions the promise never resolves or rejects at all, it just

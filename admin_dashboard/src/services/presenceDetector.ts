@@ -53,7 +53,7 @@
 import * as faceapi from 'face-api.js';
 
 const MODEL_URL = './models';
-const POLL_INTERVAL_MS = 15000; // matches PRESENCE_POLL_INTERVAL_SECONDS server-side - per-request cadence for idle detection (face + input combined check)
+const POLL_INTERVAL_MS = 20000; // widened for CPU headroom on 2-core/4-thread laptops - no longer exactly matches PRESENCE_POLL_INTERVAL_SECONDS server-side (15s), but that constant only sets the assumed trailing-gap duration for the last row in a summary window, so this stays a bounded, minor approximation rather than a real mismatch
 const AWAY_THRESHOLD_SECONDS = 600; // 10 minutes with no face and no input -> "away" rather than "idle"
 // TinyFaceDetector's default inputSize (416) downscales a 640x480 frame
 // enough that a face at typical webcam distance shrinks to where the model

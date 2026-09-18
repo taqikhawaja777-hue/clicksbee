@@ -28,7 +28,7 @@ interface BufferedActivityEvent {
 }
 
 const IDLE_THRESHOLD_SECONDS = 60;
-const POLL_INTERVAL_MS = 5000;
+const POLL_INTERVAL_MS = 12000;
 const BATCH_INTERVAL_MS = 45000;
 
 class ProductivityCaptureService {

@@ -281,13 +281,13 @@ export function startAutomated5MinScreenCaptureLoop(intervalMinutes: number = 5)
  * LIVE MONITOR VISION ANALYSIS - separate, faster capture loop feeding the
  * Manager Portal's Live Monitor page. Deliberately does NOT go through
  * transmitAndStoreScreenshot()/the Screenshot gallery table - persisting a
- * full screenshot every 10s (vs. the archival loop's 5 minutes) would
- * bloat that table ~30x for a page that only needs the latest live result,
+ * full screenshot every 25s (vs. the archival loop's 5 minutes) would
+ * bloat that table ~12x for a page that only needs the latest live result,
  * not a permanent history. Posts straight to /monitor/analyze with
  * persist:false; the backend still broadcasts the result over WebSocket
  * for the Live Monitor page to pick up.
  */
-const LIVE_VISION_INTERVAL_MS = 10000;
+const LIVE_VISION_INTERVAL_MS = 25000;
 
 async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
   if (!currentEmployeeContext) return;
@@ -320,7 +320,7 @@ async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
 function startLiveVisionMonitoring(): void {
   if (liveVisionCaptureTimer) clearInterval(liveVisionCaptureTimer);
   liveVisionCaptureTimer = setInterval(() => void captureAndAnalyzeForLiveMonitor(), LIVE_VISION_INTERVAL_MS);
-  void captureAndAnalyzeForLiveMonitor(); // don't wait 10s for the first result
+  void captureAndAnalyzeForLiveMonitor(); // don't wait 25s for the first result
 }
 
 function stopLiveVisionMonitoring(): void {
