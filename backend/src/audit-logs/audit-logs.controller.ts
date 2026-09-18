@@ -14,14 +14,24 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 export class AuditLogsController {
   constructor(private readonly auditLogsService: AuditLogsService) {}
 
-  @ApiOperation({ summary: 'Get audit logs (Admin only)' })
+  @ApiOperation({ summary: 'Get employee activity logs, filterable by shift-day date / employee / action (Admin only)' })
   @Roles(Role.ADMIN)
   @Get()
   async getLogs(
     @CurrentUser('organizationId') organizationId: string,
     @Query('page') page: string,
     @Query('limit') limit: string,
+    @Query('date') date: string,
+    @Query('userId') userId: string,
+    @Query('action') action: string,
   ) {
-    return this.auditLogsService.getLogs(organizationId, Number(page) || 1, Number(limit) || 20);
+    return this.auditLogsService.getLogs(
+      organizationId,
+      Number(page) || 1,
+      Number(limit) || 50,
+      date || undefined,
+      userId || undefined,
+      action || undefined,
+    );
   }
 }

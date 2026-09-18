@@ -151,6 +151,17 @@ export class AuthService {
       data: { lastLoginAt: new Date() },
     });
 
+    // Feeds the manager-portal Logs page (AuditLogsService.getLogs) - a
+    // login previously produced no record anywhere in the system, not
+    // even a silent one, so "logged in" could never appear alongside
+    // check-in/check-out/etc. in that employee's activity log. Purely an
+    // observability side-effect - must never block a successful login.
+    this.prisma.activityEvent
+      .create({
+        data: { organizationId: user.organizationId, userId: user.id, type: 'LOGIN' },
+      })
+      .catch((e) => console.error('[AuthService] Failed to record LOGIN activity event:', e));
+
     const tokens = await this.generateTokens(user.id, user.email, user.role, user.organizationId);
 
     const { passwordHash: _, ...result } = user;
@@ -167,20 +178,33 @@ export class AuthService {
         'super-secret-jwt-refresh-key-stitchmonitor-2026';
       const payload = this.jwtService.verify(dto.refreshToken, { secret: refreshSecret });
 
-      const tokenRecord = await this.prisma.refreshToken.findFirst({
+      // A user can hold several non-revoked refresh token rows at once —
+      // every login/register issues a new one without revoking earlier
+      // ones (only logout/change-password/a successful refresh do that) —
+      // so the row for THIS specific token can't be found by userId
+      // alone. tokenHash is a salted argon2/bcrypt hash, so the only way
+      // to identify which row a presented token belongs to is to verify
+      // it against each non-revoked candidate rather than a direct
+      // query. Using findFirst() here previously could grab an unrelated
+      // valid-but-different row for the same user and fail verification
+      // against a perfectly valid, just-issued refresh token.
+      const candidates = await this.prisma.refreshToken.findMany({
         where: {
           userId: payload.sub,
           isRevoked: false,
         },
       });
 
-      if (!tokenRecord || new Date() > tokenRecord.expiresAt) {
-        throw new UnauthorizedException('Refresh token is expired or revoked');
+      let tokenRecord: (typeof candidates)[number] | undefined;
+      for (const candidate of candidates) {
+        if (await this.verifyPassword(candidate.tokenHash, dto.refreshToken)) {
+          tokenRecord = candidate;
+          break;
+        }
       }
 
-      const isValidToken = await this.verifyPassword(tokenRecord.tokenHash, dto.refreshToken);
-      if (!isValidToken) {
-        throw new UnauthorizedException('Invalid refresh token');
+      if (!tokenRecord || new Date() > tokenRecord.expiresAt) {
+        throw new UnauthorizedException('Refresh token is expired or revoked');
       }
 
       await this.prisma.refreshToken.update({

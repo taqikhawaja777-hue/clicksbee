@@ -130,6 +130,8 @@ def check_late_returns(break_key: str) -> dict:
                 notification_type="LATE_BREAK_RETURN",
                 admin_title="Late Return From Break",
                 admin_message=f"{employee.get('full_name')} has not returned from their {window_label} break {grace_seconds // 60}+ minutes after it ended",
+                employee_title="Late Return From Break",
+                employee_message=f"You have not returned from your {window_label} break {grace_seconds // 60}+ minutes after it ended",
             )
             notified.append(employee["id"])
 

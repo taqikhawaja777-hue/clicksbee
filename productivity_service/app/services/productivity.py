@@ -726,6 +726,8 @@ class ProductivityService:
                     notification_type="CAMERA_ANOMALY",
                     admin_title="Camera Monitoring Consent Declined",
                     admin_message=f"{employee.get('full_name')} declined camera presence monitoring consent",
+                    employee_title="Camera Monitoring Consent",
+                    employee_message="You declined camera presence monitoring consent",
                 )
 
         return resp.data[0]
@@ -1016,6 +1018,8 @@ class ProductivityService:
                         notification_type="WASHROOM_LIMIT",
                         admin_title="Excessive Washroom Breaks",
                         admin_message=f"{employee.get('full_name')} has taken {len(todays_events)} washroom breaks today (limit: {config['washroom_daily_limit']})",
+                        employee_title="Washroom Break Limit",
+                        employee_message=f"You have taken {len(todays_events)} washroom breaks today (limit: {config['washroom_daily_limit']})",
                     )
 
         return event

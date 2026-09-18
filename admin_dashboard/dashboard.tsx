@@ -24,7 +24,8 @@ import {
   Pause,
   CheckSquare,
   ClipboardList,
-  PlusCircle
+  PlusCircle,
+  History
 } from 'lucide-react';
 import { ThisMonthWidget } from './ThisMonthWidget';
 import { AttendanceActionCards } from './AttendanceActionCards';
@@ -42,6 +43,7 @@ import { ManagerProductivityView } from './ManagerProductivityView';
 import { LiveMonitorView } from './LiveMonitorView';
 import { ReportsView } from './ReportsView';
 import { NotificationsPageView } from './NotificationsPageView';
+import { LogsView } from './LogsView';
 import { ManagerSettingsView } from './ManagerSettingsView';
 import { EmployeeSettingsView } from './EmployeeSettingsView';
 import { NotificationBell } from './NotificationBell';
@@ -88,6 +90,25 @@ export const AdminDashboard: React.FC = () => {
       return false;
     }
   });
+  const [sessionExpiredNotice, setSessionExpiredNotice] = useState<boolean>(false);
+
+  // apiService dispatches this when the session can no longer self-heal -
+  // the refresh token itself is expired (past its 7-day life), revoked, or
+  // missing, not just the short-lived (15min) access token, which silently
+  // refreshes on its own. Previously nothing listened for this event at
+  // all, so a dead session just left the app stuck making failed API calls
+  // with no way back to the login screen short of a manual restart.
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      localStorage.removeItem('stitch_is_authenticated');
+      const electron = (window as any).require?.('electron');
+      electron?.ipcRenderer?.invoke?.('clear-monitor-employee-context');
+      setSessionExpiredNotice(true);
+      setIsAuthenticated(false);
+    };
+    window.addEventListener('auth:unauthorized', handleSessionExpired);
+    return () => window.removeEventListener('auth:unauthorized', handleSessionExpired);
+  }, []);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [pausedSeconds, setPausedSeconds] = useState<number>(0);
   const [activeNav, setActiveNav] = useState<string>('Dashboard');
@@ -200,11 +221,13 @@ export const AdminDashboard: React.FC = () => {
 
   if (!isAuthenticated) {
     return (
-      <AuthScreen 
+      <AuthScreen
+        sessionExpiredMessage={sessionExpiredNotice ? 'Your session expired. Please sign in again.' : undefined}
         onLoginSuccess={() => {
           localStorage.setItem('stitch_is_authenticated', 'true');
+          setSessionExpiredNotice(false);
           setIsAuthenticated(true);
-        }} 
+        }}
       />
     );
   }
@@ -247,6 +270,7 @@ export const AdminDashboard: React.FC = () => {
         { name: 'Screenshots', icon: Camera },
         { name: 'Idle Time', icon: Activity },
         { name: 'Reports', icon: FileText },
+        { name: 'Logs', icon: History },
         { name: 'Notifications', icon: Bell },
         { name: 'Settings', icon: Settings },
       ]
@@ -491,6 +515,8 @@ export const AdminDashboard: React.FC = () => {
             <ManagerProductivityView />
           ) : user.role === 'MANAGER' && activeNav === 'Reports' ? (
             <ReportsView />
+          ) : user.role === 'MANAGER' && activeNav === 'Logs' ? (
+            <LogsView />
           ) : activeNav === 'Notifications' ? (
             <NotificationsPageView />
           ) : user.role === 'MANAGER' && activeNav === 'Settings' ? (

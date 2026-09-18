@@ -983,8 +983,12 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         // Persist the JWT so subsequent authenticated calls (e.g. task
         // creation/assignment) via apiService carry a valid Bearer token —
         // previously discarded here, so every JwtAuthGuard-protected
-        // endpoint was unreachable from this app.
-        apiService.setToken(tokens.accessToken);
+        // endpoint was unreachable from this app. refreshToken/expiresIn
+        // were previously discarded too, which meant the access token
+        // (15min lifetime) had no way to renew itself - every session
+        // silently broke ~15min in. Passing them lets apiService schedule
+        // a proactive refresh and self-heal on a 401 instead.
+        apiService.setToken(tokens.accessToken, tokens.refreshToken, tokens.expiresIn);
         // The socket may already be connected (unauthenticated, or with a
         // stale token) from before this login finished - reconnect now so
         // the server can join this session to the right notification

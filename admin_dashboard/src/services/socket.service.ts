@@ -11,6 +11,20 @@ class SocketService {
   private subscribedEmployees: Set<string> = new Set();
   private eventListeners: Map<string, Set<(...args: any[]) => void>> = new Map();
 
+  constructor() {
+    // apiService fires this after both a proactive (timer-based) and a
+    // reactive (401-triggered) token refresh. A socket connection that's
+    // been open since before the refresh is still holding the JWT it
+    // authenticated with at handshake time, so without this it would
+    // silently keep working off an access token the server would now
+    // reject on any *new* connection (e.g. after a network blip).
+    if (typeof window !== 'undefined') {
+      window.addEventListener('auth:refreshed', () => {
+        if (this.socket) this.reauthenticate();
+      });
+    }
+  }
+
   /**
    * Connect to Socket.IO server
    */

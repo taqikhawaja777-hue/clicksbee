@@ -24,9 +24,14 @@ const EMPLOYEE_DESIGNATION_OPTIONS = [
 
 interface AuthScreenProps {
   onLoginSuccess: () => void;
+  // Set when dashboard.tsx's auth:unauthorized listener bounced the user
+  // back here because their refresh token itself died (expired past 7d,
+  // revoked, or missing) - a plain access-token expiry self-heals
+  // silently via apiService and never reaches this screen at all.
+  sessionExpiredMessage?: string;
 }
 
-export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
+export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionExpiredMessage }) => {
   const { registerNewEmployee, loginEmployee } = useEmployee();
   const [isSignUpMode, setIsSignUpMode] = useState<boolean>(false); // Default Sign In tab
   const [roleMode, setRoleMode] = useState<'EMPLOYEE' | 'MANAGER'>('EMPLOYEE');
@@ -37,7 +42,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
   const [department, setDepartment] = useState<string>(EMPLOYEE_DEPARTMENT_OPTIONS[0]);
   const [designation, setDesignation] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [authErrorMsg, setAuthErrorMsg] = useState<string | null>(null);
+  const [authErrorMsg, setAuthErrorMsg] = useState<string | null>(sessionExpiredMessage || null);
   const [signupSuccessMsg, setSignupSuccessMsg] = useState<string | null>(null);
 
   // Manager tab is gated behind a shared unlock key - a soft deterrent
