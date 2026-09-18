@@ -8,6 +8,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { randomUUID } from 'crypto';
 import * as argon2 from 'argon2';
 import * as bcrypt from 'bcryptjs';
 import { RegisterDto } from './dto/register.dto';
@@ -156,9 +157,14 @@ export class AuthService {
     // even a silent one, so "logged in" could never appear alongside
     // check-in/check-out/etc. in that employee's activity log. Purely an
     // observability side-effect - must never block a successful login.
+    // eventId must be set to a real unique value, not omitted: every other
+    // ActivityEvent writer in this codebase (ActivitiesService) always
+    // supplies one for exactly this reason - eventId's @unique index isn't
+    // sparse, so MongoDB treats every row that omits it as colliding on
+    // the same implicit null, and only the first such row ever succeeds.
     this.prisma.activityEvent
       .create({
-        data: { organizationId: user.organizationId, userId: user.id, type: 'LOGIN' },
+        data: { organizationId: user.organizationId, userId: user.id, type: 'LOGIN', eventId: randomUUID() },
       })
       .catch((e) => console.error('[AuthService] Failed to record LOGIN activity event:', e));
 

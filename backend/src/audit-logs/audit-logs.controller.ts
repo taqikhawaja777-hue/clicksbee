@@ -14,8 +14,14 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 export class AuditLogsController {
   constructor(private readonly auditLogsService: AuditLogsService) {}
 
-  @ApiOperation({ summary: 'Get employee activity logs, filterable by shift-day date / employee / action (Admin only)' })
-  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Get employee activity logs, filterable by shift-day date / employee / action (Manager portal only)' })
+  // ADMIN alone (this endpoint's original restriction, from before it did
+  // anything) rejected real Manager-portal accounts whose backend role is
+  // literally MANAGER, not ADMIN - every other manager-facing controller in
+  // this app (attendance, licenses, policies, projects, reports) already
+  // accepts both, and the frontend itself treats them as equivalent
+  // "manager access" (see canAccessManagerDashboard in EmployeeContext.tsx).
+  @Roles(Role.ADMIN, Role.MANAGER)
   @Get()
   async getLogs(
     @CurrentUser('organizationId') organizationId: string,
