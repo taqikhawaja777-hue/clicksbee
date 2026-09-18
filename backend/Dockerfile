@@ -22,7 +22,13 @@ COPY package*.json ./
 RUN npm ci --only=production
 
 COPY --from=builder /app/dist ./dist
+# @prisma/client (node_modules/@prisma) is just a thin wrapper that
+# re-exports from the actual generated client, which `prisma generate`
+# puts in node_modules/.prisma (dot-prefixed) by default - copying only
+# @prisma left every enum/type (Role, etc.) undefined at runtime, since
+# the wrapper had nothing real to re-export.
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/prisma ./prisma
 
 EXPOSE 3000
