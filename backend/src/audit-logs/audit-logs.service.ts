@@ -3,12 +3,27 @@ import { PrismaService } from '../prisma/prisma.service';
 import { getShiftDayString, getShiftDayWindow, isPastShiftEnd } from '../common/utils/shift-day.util';
 
 // "Other actions" NotificationTypes with no dedicated source collection of
-// their own - CHECK_IN/CHECK_OUT/TASK_ASSIGNED/TASK_COMPLETED also exist as
+// their own - CHECK_IN/TASK_ASSIGNED/TASK_COMPLETED also exist as
 // NotificationType values, but those are sourced from Attendance/Task
 // directly below (the real, always-written record of the action itself,
 // not the alert about it) so they're deliberately excluded here to avoid
 // showing the same action twice.
+//
+// CHECK_OUT is the one exception - it's sourced from HERE, not from
+// Attendance.clockOut, despite Attendance being the "real" record in
+// principle. In practice Attendance.clockOut was found to be null on
+// almost every real row (a frontend bug - EmployeeContext.tsx's check-out
+// handler fired its Mongo sync call from inside an un-awaited .then()
+// chain, so it silently failed open on any error - now fixed, but that
+// doesn't repair rows already written before the fix, or protect against
+// some other future silent gap in that sync). This table's CHECK_OUT
+// notification, by contrast, is written directly by whatever session
+// actually recorded the check-out and has been reliably present for every
+// real check-out observed. Sourcing from the reliably-populated table
+// instead of the theoretically-authoritative-but-empirically-unreliable
+// one.
 const NOTIFICATION_SOURCED_ACTIONS = [
+  'CHECK_OUT',
   'IDLE_ALERT',
   'CAMERA_ANOMALY',
   'WASHROOM_LIMIT',
@@ -61,10 +76,11 @@ export class AuditLogsService {
    * supposed to is never attached to any route), so it's permanently
    * empty. Every action a manager actually needs to see already has a
    * real, always-written home elsewhere - this merges those instead:
-   * Attendance (check in/out), BreakSession (breaks), ActivityEvent
-   * (login), Task (assigned/completed), Screenshot, and Notification (for
-   * alert-style "other actions" with no dedicated table of their own -
-   * idle, camera, washroom, late break, overdue task, manual message).
+   * Attendance (check in), BreakSession (breaks), ActivityEvent (login),
+   * Task (assigned/completed), Screenshot, and Notification (check-out,
+   * plus alert-style "other actions" with no dedicated table of their own
+   * - idle, camera, washroom, late break, overdue task, manual message;
+   * see NOTIFICATION_SOURCED_ACTIONS for why check-out lives here too).
    * One shift-day window at a time, same 19:00 Asia/Karachi rollover as
    * everywhere else date-scoped in this app (see shift-day.util.ts).
    */
@@ -91,7 +107,7 @@ export class AuditLogsService {
 
     const [attendance, breaks, logins, tasksByCreated, tasksByCompleted, screenshots, notifications, users] =
       await Promise.all([
-        wants('CHECK_IN') || wants('CHECK_OUT') || wants('OVERTIME_CHECK_IN')
+        wants('CHECK_IN') || wants('OVERTIME_CHECK_IN')
           ? this.prisma.attendance.findMany({ where: { ...baseWhere, clockIn: { gte: start, lte: end } } })
           : Promise.resolve([]),
         wants('BREAK_START') || wants('BREAK_END')
@@ -152,9 +168,8 @@ export class AuditLogsService {
           rows.push({ id: `${a.id}-in`, userId: a.userId, userName, action: 'CHECK_IN', description: 'Checked in', timestamp: a.clockIn });
         }
       }
-      if (a.clockOut && wants('CHECK_OUT')) {
-        rows.push({ id: `${a.id}-out`, userId: a.userId, userName, action: 'CHECK_OUT', description: 'Checked out', timestamp: a.clockOut });
-      }
+      // CHECK_OUT is NOT read from a.clockOut here - see the
+      // NOTIFICATION_SOURCED_ACTIONS comment above for why.
     });
 
     breaks.forEach((b) => {

@@ -619,16 +619,28 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
 
     try {
-      fetch('http://localhost:3000/api/v1/employees/all').then(res => res.json()).then(json => {
+      // Was an un-awaited .then() chain with the actual check-out POST
+      // fired from inside it - the surrounding try/catch caught nothing
+      // (nothing throws synchronously here), so any failure anywhere in
+      // this chain - network error, no matching employee, non-2xx
+      // response - silently vanished as an unhandled rejection. That left
+      // Attendance.clockOut permanently null for real check-outs (visible
+      // once something actually read it - TimelineService's "Clocked Out"
+      // entry, and the Logs page's Checked Out rows, both silently missing
+      // it) even though the user genuinely checked out. Mirrors
+      // handleCheckInImpl's already-correct awaited pattern above.
+      const listRes = await fetch('http://localhost:3000/api/v1/employees/all');
+      if (listRes.ok) {
+        const json = await listRes.json();
         const emps = extractEmployeeArray(json);
         const target = emps.find((e: any) =>
           (e.email && state.user.email && e.email.toLowerCase() === state.user.email.toLowerCase()) ||
           (e.name && state.user.name && e.name.toLowerCase().includes(state.user.name.toLowerCase()))
         );
         if (target && target.id) {
-          fetch(`http://localhost:3000/api/v1/employees/${target.id}/check-out`, { method: 'POST' });
+          await fetch(`http://localhost:3000/api/v1/employees/${target.id}/check-out`, { method: 'POST' });
         }
-      });
+      }
     } catch (e) {
       console.warn('Check-out backend sync fallback:', e);
     }
