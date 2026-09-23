@@ -1,13 +1,28 @@
 name: Release Windows build
 
-# Manual only - run from the Actions tab ("Run workflow") or
-# `gh workflow run release.yml` whenever you're ready to ship a new
-# version to employees. Pushing to main never triggers this on its own.
+# Automatic - any push to main that touches admin_dashboard/ builds and
+# publishes a new release, which every installed app then auto-updates to
+# (electron-updater checks every 4h and on launch). Backend-only or
+# productivity_service-only commits don't trigger this - there's nothing
+# in them for the desktop app to ship. Also runnable on demand from the
+# Actions tab ("Run workflow") for a rebuild with no code change.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'admin_dashboard/**'
   workflow_dispatch: {}
 
+# Only one release build at a time - two pushes to admin_dashboard/ close
+# together would otherwise race on the version-bump commit below (the
+# second run's `git push` failing against the first run's already-pushed
+# bump). Queues instead of running concurrently.
+concurrency:
+  group: release-windows-build
+  cancel-in-progress: false
+
 permissions:
-  contents: write # electron-builder's GitHub publish step creates a Release + uploads the installer
+  contents: write # electron-builder's GitHub publish step creates a Release + uploads the installer, and this job commits its own version bump back to main
 
 jobs:
   build-and-publish:
@@ -23,6 +38,25 @@ jobs:
           node-version: 20
 
       - run: npm ci
+
+      # electron-updater only notifies an installed app of an update when
+      # the published version is actually higher than what it's running -
+      # publishing the same version on every push would silently do
+      # nothing. Bumping the patch version here, then committing it back
+      # to main, keeps every push producing a genuinely newer, auto-
+      # installable release without anyone having to remember to bump it
+      # by hand. [skip ci] on the bump commit stops it from re-triggering
+      # this same workflow (it also touches admin_dashboard/package.json).
+      - name: Bump patch version
+        run: npm version patch --no-git-tag-version
+
+      - name: Commit version bump back to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "Bump desktop app version to $(node -p "require('./package.json').version") [skip ci]"
+          git push
 
       - name: Build and publish to GitHub Releases
         run: npm run release:win
