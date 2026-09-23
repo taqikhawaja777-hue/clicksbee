@@ -1,9 +1,9 @@
 import React from 'react';
-import { LogOut, Coffee, CheckCircle2, LogIn, Clock } from 'lucide-react';
+import { LogOut, CheckCircle2, LogIn, Clock } from 'lucide-react';
 import { useEmployee } from './EmployeeContext';
 
 export const AttendanceActionCards: React.FC = () => {
-  const { session, handleCheckIn, handleCheckOut, handleToggleBreak } = useEmployee();
+  const { session, handleCheckIn, handleCheckOut } = useEmployee();
 
   const isCheckedIn = session.isActive;
   const isOnBreak = session.status === 'On Break';
@@ -30,10 +30,15 @@ export const AttendanceActionCards: React.FC = () => {
         </div>
       </div>
 
-      {/* ================= TOP ACTION BUTTON CARDS ================= */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        
-        {/* Card 1: Check Out / Check In Button */}
+      {/* ================= TOP ACTION BUTTON CARD ================= */}
+      {/* Was a 2-up grid with a manual Start/End Break button alongside
+          this - removed (employee self-service breaks are gone; breaks
+          are still tracked, just server/schedule-driven, see isOnBreak's
+          continued use in the status cards below), so Check In/Out now
+          spans the row alone rather than leaving an empty second column. */}
+      <div className="grid grid-cols-1 gap-6">
+
+        {/* Check Out / Check In Button */}
         {isCheckedIn ? (
           <button
             onClick={handleCheckOut}
@@ -55,27 +60,6 @@ export const AttendanceActionCards: React.FC = () => {
             <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Click to check in · Resets counter to 00:00:00 & starts shift</p>
           </button>
         )}
-
-        {/* Card 2: Break Button */}
-        <button
-          onClick={handleToggleBreak}
-          disabled={!isCheckedIn}
-          className={`w-full p-8 rounded-3xl border text-center transition-all duration-200 flex flex-col items-center justify-center min-h-[180px] ${
-            !isCheckedIn
-              ? 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 cursor-not-allowed opacity-60'
-              : isOnBreak
-              ? 'bg-[#fef3c7] dark:bg-amber-950/40 border-[#fde68a] dark:border-amber-900/50 text-[#d97706] dark:text-amber-400 hover:shadow-md active:scale-[0.99]'
-              : 'bg-[#e0f2fe] dark:bg-sky-950/40 border-[#bae6fd] dark:border-sky-900/50 text-[#0284c7] dark:text-sky-400 hover:shadow-md active:scale-[0.99]'
-          }`}
-        >
-          <Coffee className="w-10 h-10 stroke-[2.2] mb-3" />
-          <h3 className="text-xl font-bold tracking-tight mb-1">
-            {isOnBreak ? 'End Break' : 'Start Break'}
-          </h3>
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            {isOnBreak ? 'On break (Timer paused)' : 'No active break'}
-          </p>
-        </button>
 
       </div>
 

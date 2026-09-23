@@ -2,7 +2,7 @@ import { app, desktopCapturer, powerMonitor, ipcMain, BrowserWindow } from 'elec
 import fs from 'fs';
 import path from 'path';
 import { getLocalSettings } from './localSettings';
-import { BACKEND_URL } from './serverConfig';
+import { BACKEND_URL, PRODUCTIVITY_SERVICE_URL } from './serverConfig';
 
 export interface ScreenshotRecord {
   id: string;
@@ -66,6 +66,27 @@ function saveOfflineQueue(queue: ScreenshotRecord[]): void {
  * rather than falling back to a fake placeholder.
  */
 let currentEmployeeContext: { id: string; name: string; role: string } | null = null;
+
+/**
+ * Same break-status check idleTimeTracker.ts already uses to freeze its
+ * whole-day active/idle accumulators - screenshot capture (both loops
+ * below) previously ran straight through breaks (scheduled or manual)
+ * with no check at all, capturing/analyzing desktop activity during time
+ * the employee is explicitly not supposed to be monitored. Fails open on
+ * a transient productivity_service blip, matching every other
+ * degrade-gracefully check in this file/idleTimeTracker.ts.
+ */
+async function isEmployeeOnBreak(employeeId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${PRODUCTIVITY_SERVICE_URL}/api/shift/break-status/${employeeId}`);
+    if (!response.ok) return false;
+    const data = await response.json();
+    return !!data.onBreak;
+  } catch (err) {
+    console.warn('[CaptureService] Failed to check break status, assuming not on break:', err);
+    return false;
+  }
+}
 
 /**
  * 1. AUTOMATIC TIMED TRIGGER & 2. SILENT DESKTOP CAPTURE
@@ -273,6 +294,10 @@ export function startAutomated5MinScreenCaptureLoop(intervalMinutes: number = 5)
 
   automatedCaptureTimer = setInterval(async () => {
     if (!currentEmployeeContext) return; // nobody logged in yet - nothing to attribute a capture to
+    if (await isEmployeeOnBreak(currentEmployeeContext.id)) {
+      console.log('[CaptureService] On break, skipping automated capture tick.');
+      return;
+    }
     console.log(`[CaptureService] 5-minute automated capture loop executing for ${currentEmployeeContext.name}...`);
     await captureDesktopScreen();
   }, ms);
@@ -292,6 +317,7 @@ const LIVE_VISION_INTERVAL_MS = 25000;
 
 async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
   if (!currentEmployeeContext) return;
+  if (await isEmployeeOnBreak(currentEmployeeContext.id)) return;
   try {
     const sources = await desktopCapturer.getSources({
       types: ['screen'],

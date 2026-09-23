@@ -158,3 +158,13 @@ def trigger_scheduled_break(payload: TriggerScheduledBreakIn) -> dict:
     if payload.action == "start":
         return start_scheduled_break(payload.break_key)
     return end_scheduled_break(payload.break_key)
+
+
+@router.post("/dev/trigger-auto-checkout")
+def trigger_auto_checkout() -> dict:
+    """Dev/test hook - calls the exact same function the 19:00 Asia/Karachi
+    cron invokes (see app.jobs.auto_checkout), so this exercises real
+    production logic without waiting for shift end."""
+    from ..jobs.auto_checkout import auto_checkout_at_shift_end
+
+    return auto_checkout_at_shift_end()

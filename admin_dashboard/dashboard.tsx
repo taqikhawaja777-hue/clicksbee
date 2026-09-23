@@ -21,7 +21,6 @@ import {
   Target,
   HelpCircle,
   Play,
-  Pause,
   CheckSquare,
   ClipboardList,
   PlusCircle,
@@ -109,8 +108,6 @@ export const AdminDashboard: React.FC = () => {
     window.addEventListener('auth:unauthorized', handleSessionExpired);
     return () => window.removeEventListener('auth:unauthorized', handleSessionExpired);
   }, []);
-  const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [pausedSeconds, setPausedSeconds] = useState<number>(0);
   const [activeNav, setActiveNav] = useState<string>('Dashboard');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
@@ -491,16 +488,7 @@ export const AdminDashboard: React.FC = () => {
 
           {/* Section 2.2 & 2.3: Monitoring Active / Paused Banner for Employees */}
           {user.role === 'EMPLOYEE' && (
-            <MonitoringBanner 
-              isMonitoringActive={session.isActive}
-              isPaused={isPaused}
-              pausedSeconds={pausedSeconds}
-              onPauseMonitoring={() => setIsPaused(true)}
-              onResumeMonitoring={() => {
-                setIsPaused(false);
-                setPausedSeconds(0);
-              }}
-            />
+            <MonitoringBanner isMonitoringActive={session.isActive} />
           )}
 
           {/* ================= CONDITIONAL TAB RENDERING ================= */}
@@ -649,8 +637,8 @@ export const AdminDashboard: React.FC = () => {
                       : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20'
                   }`}
                 >
-                  {session.isActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                  <span>{session.isActive ? 'Check Out / Pause' : 'Check In / Start'}</span>
+                  {session.isActive ? <LogOut className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                  <span>{session.isActive ? 'Check Out' : 'Check In / Start'}</span>
                 </button>
               </div>
 

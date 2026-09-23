@@ -117,8 +117,39 @@ class ProductivityCaptureService {
     return null;
   }
 
+  /**
+   * Same break-status check idleTimeTracker.ts already uses to freeze its
+   * accumulators - this poll loop previously ran straight through breaks
+   * with no check at all.
+   */
+  private async isOnBreak(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.apiBaseUrl}/api/shift/break-status/${this.employeeId}`);
+      if (!response.ok) return false;
+      const data = await response.json();
+      return !!data.onBreak;
+    } catch (err) {
+      console.warn('[ProductivityCapture] Failed to check break status, assuming not on break:', err);
+      return false;
+    }
+  }
+
   private async pollActivity(): Promise<void> {
     if (!this.isCapturing) return;
+
+    if (await this.isOnBreak()) {
+      // Close out whatever segment was already open before the break
+      // started (correctly recording its real elapsed time up to now),
+      // then clear it - otherwise, since nothing else closes/reopens a
+      // segment while polling is skipped, the segment left open at break
+      // start would silently stretch across the entire break once
+      // polling resumes, miscounting break time as active/idle work time.
+      if (this.currentSegment) {
+        this.closeCurrentSegment();
+      }
+      console.log('[ProductivityCapture] On break, skipping poll tick.');
+      return;
+    }
 
     const idleSeconds = powerMonitor.getSystemIdleTime();
     const isIdle = idleSeconds >= IDLE_THRESHOLD_SECONDS;

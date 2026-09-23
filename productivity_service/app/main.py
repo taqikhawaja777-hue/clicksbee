@@ -56,9 +56,19 @@ def start_scheduler() -> None:
 
     from datetime import datetime, timedelta
 
+    from .jobs.auto_checkout import auto_checkout_at_shift_end
     from .jobs.scheduled_breaks import BREAK_WINDOWS, check_late_returns, end_scheduled_break, start_scheduled_break
 
     _scheduler = BackgroundScheduler()
+
+    _scheduler.add_job(
+        auto_checkout_at_shift_end,
+        "cron",
+        hour=19,
+        minute=0,
+        timezone="Asia/Karachi",
+        id="auto_checkout_shift_end",
+    )
 
     if settings.jibble_client_id and settings.jibble_client_secret:
         from .jobs.sync_jibble import run_sync

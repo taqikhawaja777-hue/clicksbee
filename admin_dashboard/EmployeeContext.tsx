@@ -194,7 +194,6 @@ export interface EmployeeContextType {
   // Actions
   handleCheckIn: () => void;
   handleCheckOut: () => void;
-  handleToggleBreak: () => void;
   registerNewEmployee: (firstName: string, lastName: string, email: string, role: 'EMPLOYEE' | 'MANAGER', password?: string, department?: string, designation?: string) => Promise<void>;
   loginEmployee: (email: string, password?: string, requestedRole?: 'EMPLOYEE' | 'MANAGER') => Promise<boolean>;
 }
@@ -663,46 +662,6 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  // Toggle Break
-  const handleToggleBreak = async () => {
-    if (shiftActionInFlightRef.current) return;
-    shiftActionInFlightRef.current = true;
-    try {
-      await handleToggleBreakImpl();
-    } finally {
-      shiftActionInFlightRef.current = false;
-    }
-  };
-
-  const handleToggleBreakImpl = async () => {
-    const startingBreak = state.session.status !== 'On Break';
-
-    // Optimistic local flip for instant button feedback - the next
-    // shiftSummary poll/refresh corrects this to the server's authoritative
-    // status regardless, so a failed request self-heals rather than
-    // leaving the UI stuck showing the wrong state.
-    setState((prev: typeof state) => ({
-      ...prev,
-      session: {
-        ...prev.session,
-        status: prev.session.status === 'On Break' ? 'Present' : 'On Break',
-      }
-    }));
-
-    if (!productivityEmployeeId) return;
-    try {
-      if (startingBreak) {
-        await productivityApiService.startBreak(productivityEmployeeId);
-      } else {
-        await productivityApiService.endBreak(productivityEmployeeId);
-      }
-      await refreshShiftSummary();
-      notifyShiftStateChanged();
-    } catch (e) {
-      console.warn('[EmployeeContext] Failed to sync break toggle:', e);
-    }
-  };
-
   // Real assigned/completed task counts (was previously a fake local
   // counter starting from a hardcoded "15 total tasks" baseline for every
   // employee, with a "+ Done" button that just incremented it and wrapped
@@ -1053,7 +1012,6 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setProductivityEmployeeId,
         handleCheckIn,
         handleCheckOut,
-        handleToggleBreak,
         registerNewEmployee,
         loginEmployee,
       }}

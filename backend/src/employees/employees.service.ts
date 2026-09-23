@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { CreateEmployeeDto, UpdateEmployeeDto } from './dto/employee.dto';
@@ -425,5 +426,40 @@ export class EmployeesService {
     });
 
     return { success: true, message: `${user.firstName} ${user.lastName} checked out successfully` };
+  }
+
+  /**
+   * Auto-checks-out anyone whose WorkSession is still open when the shift
+   * ends (19:00 Asia/Karachi) - forgetting to check out (or a crashed/
+   * offline client that never got the chance) would otherwise leave that
+   * session open forever, corrupting every attendance/hours calculation
+   * that reads it. Mirrors productivity_service's equivalent job
+   * (auto_checkout.py, same 19:00 Asia/Karachi trigger) on the Supabase/
+   * shift_events side - both run independently, each closing out its own
+   * database's still-open sessions, same pattern as check-in/check-out
+   * already being dual-written from the frontend on every real action.
+   * Not org-scoped, same as checkOutEmployee() itself and every other
+   * shift-boundary assumption in this app (see shift-day.util.ts) - there
+   * is currently only one global fixed shift, not a per-org one.
+   */
+  @Cron('0 19 * * *', { timeZone: 'Asia/Karachi' })
+  async autoCheckoutAtShiftEnd() {
+    const openSessions = await this.prisma.workSession.findMany({
+      where: { endedAt: null },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+
+    for (const { userId } of openSessions) {
+      try {
+        await this.checkOutEmployee(userId);
+      } catch (e) {
+        console.error(`[EmployeesService] Auto-checkout failed for user ${userId}:`, e);
+      }
+    }
+
+    if (openSessions.length > 0) {
+      console.log(`[EmployeesService] Auto-checkout at shift end: checked out ${openSessions.length} employee(s).`);
+    }
   }
 }
