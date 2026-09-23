@@ -1,6 +1,6 @@
 {
   "name": "worktrackpro-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WorkTrackPro Employee Monitoring Desktop Agent",
   "author": "StitchMonitor",
   "main": "dist-electron/main.js",
