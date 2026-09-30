@@ -890,29 +890,27 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const cleanFirstName = firstName.trim();
     const cleanLastName = lastName.trim();
 
-    try {
-      const res = await fetch(`${API_ORIGIN}/api/v1/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          firstName: cleanFirstName,
-          lastName: cleanLastName,
-          email: email.toLowerCase().trim(),
-          password,
-          organizationName: 'StitchMonitor Corp',
-          role: role === 'MANAGER' ? 'ADMIN' : 'EMPLOYEE',
-          departmentName: department,
-          designation: designation || undefined,
-        }),
-      });
+    const res = await fetch(`${API_ORIGIN}/api/v1/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        firstName: cleanFirstName,
+        lastName: cleanLastName,
+        email: email.toLowerCase().trim(),
+        password,
+        organizationName: 'StitchMonitor Corp',
+        role: role === 'MANAGER' ? 'ADMIN' : 'EMPLOYEE',
+        departmentName: department,
+        designation: designation || undefined,
+      }),
+    });
 
-      if (res.ok) {
-        const json = await res.json();
-        console.log('MongoDB Signup Success Response:', json);
-      }
-    } catch (e) {
-      console.log('Backend API register connection fallback mode:', e);
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(json?.message || json?.error || 'Unable to create the account. Please try again.');
     }
+
+    console.log('MongoDB Signup Success Response:', json);
 
     const newBaseline = getNewSignupBaseline(cleanFirstName, cleanLastName, email, role);
     setState(newBaseline);

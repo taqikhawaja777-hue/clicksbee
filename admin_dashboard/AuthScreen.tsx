@@ -202,7 +202,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
             <div className="p-3.5 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 rounded-2xl flex items-start space-x-2.5 text-xs text-red-800 dark:text-red-300">
               <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
               <div>
-                <p className="font-bold">Manager Access Restricted</p>
+                <p className="font-bold">
+                  {roleMode === 'MANAGER' ? 'Manager Access Restricted' : 'Sign-In Failed'}
+                </p>
                 <p className="mt-0.5">{authErrorMsg}</p>
               </div>
             </div>
