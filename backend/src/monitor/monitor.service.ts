@@ -111,10 +111,33 @@ export class MonitorService {
     this.logger.log(`[MonitorService] Analyzing screenshot for employeeId: ${employeeId} (department=${user.department?.name || 'none'})`);
 
     // Delegate AI analysis to GeminiVisionService
-    const visionResult: VisionAnalysisResult = await this.visionService.analyzeScreenshot(
+    const visionResult = await this.visionService.analyzeScreenshot(
       imageBase64,
       user.department?.name,
     );
+
+    // Do not present a failed LLM request as a successful employee
+    // evaluation. Previously this path published canned VS Code / 94% data.
+    if (!visionResult) {
+      const unavailableResult: ActivityAnalysisResult = {
+        summary: 'AI vision analysis is unavailable. Check the backend Gemini configuration and logs.',
+        taskRelevance: 'No',
+        activityType: 'Idle',
+        confidenceScore: 0,
+        status: 'IDLE',
+        activeWindow: 'Analysis unavailable',
+        timestamp: captureTime,
+        detectedApps: [],
+        concerns: ['No LLM result was returned for this screenshot.'],
+      };
+      this.monitorGateway.broadcastEmployeeUpdate(employeeId, {
+        ...unavailableResult,
+        employeeIsActive: user.isActive,
+        department: user.department?.name || null,
+        analysisAvailable: false,
+      } as any);
+      return { success: false, data: unavailableResult };
+    }
 
     const analysisResult: ActivityAnalysisResult = {
       ...visionResult,
@@ -130,6 +153,7 @@ export class MonitorService {
       ...analysisResult,
       employeeIsActive: user.isActive,
       department: user.department?.name || null,
+      analysisAvailable: true,
     } as any);
 
     // Update in-memory status

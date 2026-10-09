@@ -128,11 +128,11 @@ export const LiveMonitorView: React.FC = () => {
             ...prev,
             department: data.department ?? prev?.department ?? null,
             isActive: data.employeeIsActive ?? prev?.isActive ?? true,
-            hasAnalysis: true,
+            hasAnalysis: data.analysisAvailable !== false,
             productivityStatus: data.status === 'OFF TASK' ? 'DISTRACTED' : data.status === 'IDLE' ? 'IDLE' : 'ON_TRACK',
             aiConfidenceScore: typeof data.confidenceScore === 'number' ? data.confidenceScore : (prev?.aiConfidenceScore ?? null),
             latestScreenSummary: {
-              aiSummary: data.summary || prev?.latestScreenSummary?.aiSummary || 'Desktop screen context analyzed',
+              aiSummary: data.summary || prev?.latestScreenSummary?.aiSummary || 'Awaiting analysis...',
               progressPercentage: typeof data.confidenceScore === 'number' ? data.confidenceScore : (prev?.latestScreenSummary?.progressPercentage ?? null),
               status: data.status,
               isTaskRelevant: data.taskRelevance !== 'No',

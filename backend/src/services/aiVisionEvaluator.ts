@@ -129,12 +129,11 @@ Output strictly in JSON:
         }),
       });
 
-      let evalResult: VisionEvaluationResult;
+      let evalResult: VisionEvaluationResult | null = null;
 
       if (!response.ok) {
         const errText = await response.text();
-        this.logger.warn(`Vision LLM API error ${response.status}: ${errText}`);
-        evalResult = this.generateFallbackEvaluation(taskTitle, elapsedMinutes, estimatedTimeMinutes);
+        this.logger.error(`Vision LLM API error ${response.status}; screenshot will remain unevaluated: ${errText}`);
       } else {
         const data = await response.json();
         const content = data?.choices?.[0]?.message?.content;
@@ -164,11 +163,13 @@ Output strictly in JSON:
               summary: parsed.summary || `Employee working on ${taskTitle}.`,
             };
           } catch (e) {
-            evalResult = this.generateFallbackEvaluation(taskTitle, elapsedMinutes, estimatedTimeMinutes);
+            this.logger.error('Vision LLM returned invalid JSON; screenshot will remain unevaluated.');
           }
-        } else {
-          evalResult = this.generateFallbackEvaluation(taskTitle, elapsedMinutes, estimatedTimeMinutes);
         }
+      }
+
+      if (!evalResult) {
+        return null;
       }
 
       // Update Screenshot record in DB
@@ -215,21 +216,4 @@ Output strictly in JSON:
     return null;
   }
 
-  private generateFallbackEvaluation(
-    taskTitle: string,
-    elapsedMinutes: number,
-    estimatedMinutes: number,
-  ): VisionEvaluationResult {
-    const isOvertime = elapsedMinutes > estimatedMinutes;
-    const progress = Math.min(95, Math.round((elapsedMinutes / estimatedMinutes) * 100));
-
-    return {
-      isTaskRelevant: true,
-      progressPercentage: progress,
-      status: isOvertime ? 'BEHIND_SCHEDULE' : 'ON_TRACK',
-      summary: isOvertime
-        ? `Employee has elapsed ${elapsedMinutes}m on task "${taskTitle}" (Est: ${estimatedMinutes}m) and is behind schedule.`
-        : `Employee actively working on task "${taskTitle}" with screen context matching work session.`,
-    };
-  }
 }

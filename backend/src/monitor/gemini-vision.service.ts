@@ -26,16 +26,16 @@ export class GeminiVisionService {
     // gemini-1.5-flash and gemini-2.5-flash are both retired for this key.
     // gemini-3.6-flash worked but its free tier is only 20 requests per
     // DAY (not per-minute) - a 10-second capture loop exhausts that in
-    // ~3 minutes, after which every call 429s and silently falls back to
-    // the generic defaultResult below for the rest of the day (looks like
-    // "the analysis never changes" from the UI). gemini-flash-lite-latest
+    // ~3 minutes, after which every call 429s. gemini-flash-lite-latest
     // handled 8 rapid back-to-back real-image calls with zero rate-limit
     // errors in testing - verified directly against Google's API, not
     // assumed.
     this.visionModel = this.configService.get<string>('GEMINI_VISION_MODEL') || 'gemini-flash-lite-latest';
   }
 
-  async analyzeScreenshot(imageBase64: string, departmentContext?: string): Promise<VisionAnalysisResult> {
+  async analyzeScreenshot(imageBase64: string, departmentContext?: string): Promise<VisionAnalysisResult | null> {
+    // Retained only as the shared response shape documentation. It is never
+    // returned: failures below return null so mock data cannot reach a user.
     const defaultResult: VisionAnalysisResult = {
       summary: 'Employee is actively working on developer workstation tasks.',
       taskRelevance: 'Yes',
@@ -49,7 +49,8 @@ export class GeminiVisionService {
     };
 
     if (!this.apiKey) {
-      return defaultResult;
+      this.logger.error('Gemini vision analysis was requested, but GEMINI_API_KEY is not configured.');
+      return null;
     }
 
     try {
@@ -110,7 +111,9 @@ export class GeminiVisionService {
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         return {
-          summary: parsed.summary || defaultResult.summary,
+          summary: typeof parsed.summary === 'string' && parsed.summary.trim()
+            ? parsed.summary.trim()
+            : 'Gemini returned no activity summary.',
           taskRelevance: parsed.taskRelevance === 'No' ? 'No' : 'Yes',
           activityType: parsed.activityType || 'Work Activity',
           confidenceScore: Number(parsed.confidenceScore) || 92,
@@ -120,16 +123,20 @@ export class GeminiVisionService {
               : parsed.status === 'IDLE'
               ? 'IDLE'
               : 'ON TRACK',
-          activeWindow: parsed.activeWindow || defaultResult.activeWindow,
-          productivityScore: Number(parsed.productivityScore) || 85,
+          activeWindow: typeof parsed.activeWindow === 'string' && parsed.activeWindow.trim()
+            ? parsed.activeWindow.trim()
+            : 'Unknown application',
+          productivityScore: Number.isFinite(Number(parsed.productivityScore))
+            ? Math.max(0, Math.min(100, Number(parsed.productivityScore)))
+            : 0,
           detectedApps: Array.isArray(parsed.detectedApps) ? parsed.detectedApps : [],
           concerns: Array.isArray(parsed.concerns) ? parsed.concerns : [],
         };
       }
     } catch (error) {
-      this.logger.warn(`[GeminiVision] API call fallback: ${error.message}`);
+      this.logger.error(`[GeminiVision] API call failed; no analysis will be published: ${error.message}`);
     }
 
-    return defaultResult;
+    return null;
   }
 }

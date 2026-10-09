@@ -1,5 +1,6 @@
-import { app, BrowserWindow, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, session } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { registerCaptureIpcHandlers } from './captureService';
@@ -55,7 +56,154 @@ function createWindow() {
   }
 }
 
+let manualUpdateCheckPending = false;
+let updatePromptVisible = false;
+type UpdateState = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
+let updateStatus: { state: UpdateState; message: string; version?: string } = {
+  state: 'idle',
+  message: 'Updates are checked automatically.',
+};
+
+function publishUpdateStatus(state: UpdateState, message: string, version?: string): void {
+  updateStatus = { state, message, version };
+  console.log(`[AutoUpdater] ${message}`);
+  if (app.isReady()) {
+    const logPath = path.join(app.getPath('userData'), 'updater.log');
+    fs.appendFile(logPath, `${new Date().toISOString()} ${message}\n`, () => undefined);
+  }
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send('updater:status', updateStatus);
+  }
+}
+
+function checkForUpdates(manual = false): void {
+  // A development run has no app-update.yml or installed NSIS target, so it
+  // cannot update itself. Making that explicit avoids a misleading menu item.
+  if (!app.isPackaged) {
+    if (manual) {
+      void dialog.showMessageBox({
+        type: 'info',
+        title: 'Check for Updates',
+        message: 'Updates are available only in the installed Windows application.',
+      });
+    }
+    return;
+  }
+
+  manualUpdateCheckPending = manual;
+  publishUpdateStatus('checking', 'Checking for updates…');
+  autoUpdater.checkForUpdates().catch((err) => {
+    publishUpdateStatus('error', 'Unable to check for updates.');
+    if (manual) {
+      void dialog.showMessageBox({
+        type: 'error',
+        title: 'Update Check Failed',
+        message: 'Unable to check for updates. Please try again later.',
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+}
+
+function registerAutoUpdaterDialogs(): void {
+  // Download only after the employee chooses it in the update prompt.
+  autoUpdater.autoDownload = false;
+
+  autoUpdater.on('update-available', async (info) => {
+    publishUpdateStatus('available', `Version ${info.version} is available.`, info.version);
+    if (updatePromptVisible) return;
+    updatePromptVisible = true;
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      title: 'Update Available',
+      message: `WorkTrackPro ${info.version} is available.`,
+      detail: 'Download the update now? It will install after you choose Restart and Install.',
+      buttons: ['Download Update', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    updatePromptVisible = false;
+    manualUpdateCheckPending = false;
+
+    if (response === 0) {
+      publishUpdateStatus('downloading', `Downloading version ${info.version}…`, info.version);
+      autoUpdater.downloadUpdate().catch((err) => {
+        publishUpdateStatus('error', 'The update could not be downloaded.', info.version);
+        void dialog.showMessageBox({
+          type: 'error',
+          title: 'Update Download Failed',
+          message: 'The update could not be downloaded. Please try again later.',
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+  });
+
+  autoUpdater.on('update-not-available', (info) => {
+    publishUpdateStatus('idle', `WorkTrackPro ${info.version} is up to date.`, info.version);
+    if (!manualUpdateCheckPending) return;
+    manualUpdateCheckPending = false;
+    void dialog.showMessageBox({
+      type: 'info',
+      title: 'Check for Updates',
+      message: `You already have the latest version (${info.version}).`,
+    });
+  });
+
+  autoUpdater.on('update-downloaded', async (info) => {
+    publishUpdateStatus('ready', `Version ${info.version} is ready to install.`, info.version);
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      title: 'Update Ready',
+      message: `WorkTrackPro ${info.version} has been downloaded.`,
+      detail: 'Restart now to install the update.',
+      buttons: ['Restart and Install', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      autoUpdater.quitAndInstall();
+    }
+  });
+
+  autoUpdater.on('error', (err) => {
+    publishUpdateStatus('error', 'Update service reported an error.');
+    console.warn('[AutoUpdater] Error:', err);
+  });
+}
+
+function createApplicationMenu(): void {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [
+        {
+          label: 'Check for Updates…',
+          click: () => checkForUpdates(true),
+        },
+        {
+          label: 'About WorkTrackPro',
+          click: () => {
+            void dialog.showMessageBox({
+              type: 'info',
+              title: 'About WorkTrackPro',
+              message: `WorkTrackPro ${app.getVersion()}`,
+              detail: 'Updates are checked at startup and every four hours. When an update is downloaded, restart the app to install it.',
+            });
+          },
+        },
+      ],
+    },
+  ]));
+}
+
 app.whenReady().then(() => {
+  ipcMain.handle('updater:get-status', () => updateStatus);
+  createApplicationMenu();
   // Cooperative, not a hard cap: this only changes how Windows' scheduler
   // arbitrates CPU time under contention (maps to SetPriorityClass on
   // Windows, a nice adjustment on Linux/macOS) - on an idle machine this
@@ -103,19 +251,11 @@ app.whenReady().then(() => {
   // has no such file and no installer to update in place). Only the NSIS
   // installer target supports being updated this way - the portable .exe
   // target has no installed location to update into, so this silently
-  // finds no update to apply there. checkForUpdatesAndNotify() downloads
-  // in the background and shows a native OS notification once ready; the
-  // update then applies on the app's next normal restart, never forcing
-  // one mid-shift.
+  // finds no update to apply there. A GitHub release is offered in a
+  // dialog, downloaded only after the user agrees, then installed after
+  // they choose "Restart and Install".
   if (process.env.NODE_ENV !== 'development') {
-    const checkForUpdates = () => {
-      autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-        console.warn('[AutoUpdater] Update check failed:', err);
-      });
-    };
-    autoUpdater.on('error', (err) => console.warn('[AutoUpdater] Error:', err));
-    autoUpdater.on('update-available', (info) => console.log('[AutoUpdater] Update available:', info.version));
-    autoUpdater.on('update-downloaded', (info) => console.log('[AutoUpdater] Update downloaded, will install on next restart:', info.version));
+    registerAutoUpdaterDialogs();
     checkForUpdates();
     setInterval(checkForUpdates, 4 * 60 * 60 * 1000); // re-check every 4h - this app never quits on its own
   }
