@@ -20,13 +20,15 @@ def _seed_employee(store: dict, name: str = "Ada Lovelace") -> str:
 
 
 def _seed_idle_time_log(
-    store: dict, employee_id: str, day: date, active: int, idle: int, jabber: int = 0, wildix: int = 0
+    store: dict, employee_id: str, day: date, active: int, idle: int, jabber: int = 0, wildix: int = 0, yeastar: int = 0
 ) -> None:
-    app_focus = {"Other": max(0, active - jabber - wildix)}
+    app_focus = {"Other": max(0, active - jabber - wildix - yeastar)}
     if jabber:
         app_focus["Cisco Jabber"] = jabber
     if wildix:
         app_focus["Wildix"] = wildix
+    if yeastar:
+        app_focus["Yeastar Linkus Lite"] = yeastar
     store.setdefault("idle_time_logs", []).append(
         {
             "id": str(uuid4()),
@@ -69,7 +71,7 @@ def test_attendance_ratio_basic_and_capped():
 
 
 def test_app_focus_score_basic_and_zero_denominator():
-    assert ProductivityService._compute_app_focus_score(1000, 500, 3000) == 50.0
+    assert ProductivityService._compute_app_focus_score(1000, 500, 3000, 500) == 66.67
     assert ProductivityService._compute_app_focus_score(0, 0, 0) == 0.0
 
 
@@ -240,9 +242,9 @@ def test_overall_productivity_full_breakdown_for_one_employee_day():
     service.log_check_out(employee_id, occurred_at=check_in_at + timedelta(hours=8, minutes=30))
 
     # idle_time_logs: 5h active, 1h idle for the day; of the active time,
-    # 1h Jabber + 30min Wildix.
+    # 1h Jabber + 30min Wildix + 15min Yeastar Linkus Lite.
     _seed_idle_time_log(
-        store, employee_id, today, active=5 * 3600, idle=3600, jabber=3600, wildix=1800
+        store, employee_id, today, active=5 * 3600, idle=3600, jabber=3600, wildix=1800, yeastar=900
     )
 
     # combined_active_seconds (camera+input) for the day: 4.5h.
@@ -258,12 +260,13 @@ def test_overall_productivity_full_breakdown_for_one_employee_day():
     assert row["shift_duration_seconds"] == 7 * 3600 + 50 * 60
     assert row["jabber_seconds"] == 3600
     assert row["wildix_seconds"] == 1800
+    assert row["yeastar_seconds"] == 900
     assert row["idle_seconds"] == 3600
 
     expected_attendance = round(
         min(100.0, (row["combined_active_seconds"] / row["shift_duration_seconds"]) * 100), 2
     )
-    expected_app_focus = round(min(100.0, (5400 / row["combined_active_seconds"]) * 100), 2)
+    expected_app_focus = round(min(100.0, (6300 / row["combined_active_seconds"]) * 100), 2)
     # idle 3600s vs 1800s threshold = 1800s excess = 30min * 1pt/min = 30pt off
     expected_compliance = 70.0
 

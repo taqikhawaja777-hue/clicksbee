@@ -88,6 +88,7 @@ class ShiftSummaryOut(CamelModel):
     idle_seconds: int
     jabber_seconds: int
     wildix_seconds: int
+    yeastar_seconds: int
     productivity_percentage: float
     attendance_ratio: float
     app_focus_score: float

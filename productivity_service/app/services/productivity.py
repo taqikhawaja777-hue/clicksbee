@@ -610,6 +610,8 @@ class ProductivityService:
             return "ACTIVE_JABBER"
         if row.get("last_active_app") == "Wildix":
             return "ACTIVE_WILDIX"
+        if row.get("last_active_app") == "Yeastar Linkus Lite":
+            return "ACTIVE_YEASTAR"
         return "ACTIVE"
 
     def _camera_aware_status(
@@ -682,6 +684,7 @@ class ProductivityService:
                     "idle_seconds": summary["idle_seconds"],
                     "jabber_seconds": summary["jabber_seconds"],
                     "wildix_seconds": summary["wildix_seconds"],
+                    "yeastar_seconds": summary["yeastar_seconds"],
                     "productivity_percentage": summary["productivity_percentage"],
                     "status": summary["status"],
                     "updated_at": summary["idle_updated_at"] or datetime.now(timezone.utc).isoformat(),
@@ -1175,12 +1178,17 @@ class ProductivityService:
         return round(min(100.0, (combined_active_seconds / shift_duration_seconds) * 100), 2)
 
     @staticmethod
-    def _compute_app_focus_score(jabber_seconds: float, wildix_seconds: float, combined_active_seconds: float) -> float:
-        """App Focus Score = (Cisco Jabber Time + Wildix Time) / Combined
-        Active Time."""
+    def _compute_app_focus_score(
+        jabber_seconds: float,
+        wildix_seconds: float,
+        combined_active_seconds: float,
+        yeastar_seconds: float = 0,
+    ) -> float:
+        """App Focus Score = supported dialer focus time / Combined Active Time."""
         if combined_active_seconds <= 0:
             return 0.0
-        return round(min(100.0, ((jabber_seconds + wildix_seconds) / combined_active_seconds) * 100), 2)
+        dialer_seconds = jabber_seconds + wildix_seconds + yeastar_seconds
+        return round(min(100.0, (dialer_seconds / combined_active_seconds) * 100), 2)
 
     @staticmethod
     def _compute_compliance_score(
@@ -1289,6 +1297,7 @@ class ProductivityService:
         shift_duration_seconds: float,
         jabber_seconds: float,
         wildix_seconds: float,
+        yeastar_seconds: float,
         idle_seconds: float,
         day_events: list[dict],
         day_presence_rows: list[dict],
@@ -1299,7 +1308,9 @@ class ProductivityService:
         dashboard card/report/table showing a productivity percentage)
         goes through this one function."""
         attendance_ratio = cls._compute_attendance_ratio(combined_active_seconds, shift_duration_seconds)
-        app_focus_score = cls._compute_app_focus_score(jabber_seconds, wildix_seconds, combined_active_seconds)
+        app_focus_score = cls._compute_app_focus_score(
+            jabber_seconds, wildix_seconds, combined_active_seconds, yeastar_seconds
+        )
         compliance_score, compliance_breakdown = cls._compute_compliance_score(
             idle_seconds, day_events, day_presence_rows, config
         )
@@ -1453,6 +1464,7 @@ class ProductivityService:
             "idle_seconds": idle_seconds,
             "jabber_seconds": app_focus.get("Cisco Jabber", 0),
             "wildix_seconds": app_focus.get("Wildix", 0),
+            "yeastar_seconds": app_focus.get("Yeastar Linkus Lite", 0),
             "productivity_percentage": productivity_percentage,
             "attendance_ratio": report_row["attendance_ratio"],
             "app_focus_score": report_row["app_focus_score"],
@@ -1579,12 +1591,14 @@ class ProductivityService:
         app_focus = (idle_row.get("app_focus_seconds") or {}) if idle_row else {}
         jabber_seconds = app_focus.get("Cisco Jabber", 0)
         wildix_seconds = app_focus.get("Wildix", 0)
+        yeastar_seconds = app_focus.get("Yeastar Linkus Lite", 0)
 
         overall = ProductivityService._compute_overall_productivity(
             combined_active_seconds=presence["combined_active_seconds"],
             shift_duration_seconds=total_shift_seconds,
             jabber_seconds=jabber_seconds,
             wildix_seconds=wildix_seconds,
+            yeastar_seconds=yeastar_seconds,
             idle_seconds=idle_seconds,
             day_events=events,
             day_presence_rows=day_presence_rows,
@@ -1604,6 +1618,7 @@ class ProductivityService:
             "idle_seconds": idle_seconds,
             "jabber_seconds": jabber_seconds,
             "wildix_seconds": wildix_seconds,
+            "yeastar_seconds": yeastar_seconds,
             "productivity_percentage": overall["overall_productivity_percentage"],
             "attendance_ratio": overall["attendance_ratio"],
             "app_focus_score": overall["app_focus_score"],

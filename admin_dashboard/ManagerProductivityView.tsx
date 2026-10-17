@@ -157,7 +157,7 @@ export const ManagerProductivityView: React.FC = () => {
             <div className="p-6 rounded-3xl border shadow-sm bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800">
               <p className="text-xs font-medium text-slate-400">App Focus Score</p>
               <h4 className="text-3xl font-extrabold text-cyan-500 mt-2">{summary.appFocusScore}%</h4>
-              <p className="text-xs text-slate-400 mt-1">(Jabber + Wildix) ÷ Combined Active</p>
+              <p className="text-xs text-slate-400 mt-1">(Jabber + Wildix + Yeastar) ÷ Combined Active</p>
             </div>
 
             <div className="p-6 rounded-3xl border shadow-sm bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800">
@@ -171,7 +171,7 @@ export const ManagerProductivityView: React.FC = () => {
             <h4 className="text-lg font-bold text-slate-800 dark:text-white mb-4">
               Real Tracked Time — {selectedEmployee?.fullName || 'Employee'}
             </h4>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
               <div>
                 <p className="text-slate-400">Combined Active</p>
                 <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.combinedActiveSeconds)}</p>
@@ -183,6 +183,10 @@ export const ManagerProductivityView: React.FC = () => {
               <div>
                 <p className="text-slate-400">Wildix</p>
                 <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.wildixSeconds)}</p>
+              </div>
+              <div>
+                <p className="text-slate-400">Yeastar Linkus Lite</p>
+                <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.yeastarSeconds)}</p>
               </div>
               <div>
                 <p className="text-slate-400">Idle</p>

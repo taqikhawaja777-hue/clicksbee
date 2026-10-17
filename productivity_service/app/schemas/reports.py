@@ -25,6 +25,7 @@ class DailyReportRowOut(CamelModel):
     idle_seconds: int
     jabber_seconds: int
     wildix_seconds: int
+    yeastar_seconds: int
     productivity_percentage: float
     camera_active_seconds: int
     combined_active_seconds: int

@@ -40,6 +40,7 @@ class EmployeeIdleStatusOut(CamelModel):
     idle_seconds: int
     jabber_seconds: int
     wildix_seconds: int
+    yeastar_seconds: int
     productivity_percentage: float
     # NOT_CHECKED_IN | CHECKED_OUT | ON_BREAK | ACTIVE_JABBER | ACTIVE_WILDIX
     # | ACTIVE | IDLE | AWAY - sourced from ProductivityService.get_shift_summary()

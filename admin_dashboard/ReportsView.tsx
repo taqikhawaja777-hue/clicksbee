@@ -162,7 +162,7 @@ export const ReportsView: React.FC = () => {
       } else if (reportType === 'Productivity Report') {
         const { rows } = await productivityApiService.getProductivityReport(startDate, endDate);
         const present = rows.filter((r: DailyReportRow) => r.attendanceStatus === 'PRESENT');
-        headers = ['Employee Name', 'Date', 'Active', 'Idle', 'Productivity %', 'Cisco Jabber', 'Wildix', 'Camera-Confirmed'];
+        headers = ['Employee Name', 'Date', 'Active', 'Idle', 'Productivity %', 'Cisco Jabber', 'Wildix', 'Yeastar Linkus Lite', 'Camera-Confirmed'];
         body = present.map((r: DailyReportRow) => [
           r.employeeName,
           r.date,
@@ -171,6 +171,7 @@ export const ReportsView: React.FC = () => {
           `${r.productivityPercentage}%`,
           formatHM(r.jabberSeconds),
           formatHM(r.wildixSeconds),
+          formatHM(r.yeastarSeconds),
           formatHM(r.cameraActiveSeconds),
         ]);
       } else if (reportType === 'Screenshot Report') {

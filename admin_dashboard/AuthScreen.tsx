@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Monitor, User, Mail, Lock, LogIn, UserPlus, ArrowRight, CheckCircle2, ShieldCheck, AlertCircle, Building2, Briefcase, KeyRound, X } from 'lucide-react';
 import { useEmployee } from './EmployeeContext';
 
@@ -39,6 +39,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
   const [lastName, setLastName] = useState<string>('');
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [rememberCredentials, setRememberCredentials] = useState<boolean>(true);
   const [department, setDepartment] = useState<string>(EMPLOYEE_DEPARTMENT_OPTIONS[0]);
   const [designation, setDesignation] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -56,6 +57,41 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
   const [showManagerKeyModal, setShowManagerKeyModal] = useState<boolean>(false);
   const [managerKeyInput, setManagerKeyInput] = useState<string>('');
   const [managerKeyError, setManagerKeyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedEmail = localStorage.getItem('stitch_auth_email') || '';
+    if (savedEmail) setEmail(savedEmail);
+
+    const ipcRenderer = (window as any).require?.('electron')?.ipcRenderer;
+    ipcRenderer?.invoke?.('auth:get-saved-credentials').then((saved: { email: string; password: string } | null) => {
+      if (!saved) return;
+      setEmail(saved.email);
+      setPassword(saved.password);
+      setRememberCredentials(true);
+    }).catch((error: unknown) => {
+      console.warn('[Auth] Could not load saved credentials:', error);
+    });
+  }, []);
+
+  const saveCredentials = async (cleanEmail: string, submittedPassword: string) => {
+    try {
+      localStorage.setItem('stitch_auth_email', cleanEmail);
+    } catch (error) {
+      console.warn('[Auth] Could not remember the email address:', error);
+    }
+    const ipcRenderer = (window as any).require?.('electron')?.ipcRenderer;
+    if (!ipcRenderer?.invoke) return;
+
+    try {
+      if (rememberCredentials) {
+        await ipcRenderer.invoke('auth:save-credentials', { email: cleanEmail, password: submittedPassword });
+      } else {
+        await ipcRenderer.invoke('auth:clear-saved-credentials');
+      }
+    } catch (error) {
+      console.warn('[Auth] Could not save credentials securely:', error);
+    }
+  };
 
   const handleManagerKeySubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,6 +138,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
           roleMode === 'EMPLOYEE' ? designation : undefined
         );
 
+        await saveCredentials(cleanEmail, password || 'Taqu77777');
+
         setSignupSuccessMsg(`Account created as ${roleMode}! Saved in MongoDB. Please sign in below.`);
         setAuthErrorMsg(null);
         setIsSignUpMode(false);
@@ -113,6 +151,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
         );
 
         if (loginSuccessful) {
+          await saveCredentials(cleanEmail, password || 'Taqu77777');
           setAuthErrorMsg(null);
           onLoginSuccess();
         }
@@ -247,7 +286,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
             </button>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="on">
             
             {isSignUpMode && (
               <div className="grid grid-cols-2 gap-3">
@@ -329,8 +368,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
+                  name="email"
                   type="email"
                   required
+                  autoComplete="username"
                   value={email}
                   onChange={(e) => {
                     setEmail(e.target.value);
@@ -347,8 +388,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
+                  name="password"
                   type="password"
                   required
+                  autoComplete={isSignUpMode ? 'new-password' : 'current-password'}
                   value={password}
                   onChange={(e) => {
                     setPassword(e.target.value);
@@ -359,6 +402,16 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess, sessionE
                 />
               </div>
             </div>
+
+            <label className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <input
+                type="checkbox"
+                checked={rememberCredentials}
+                onChange={(e) => setRememberCredentials(e.target.checked)}
+                className="accent-indigo-600"
+              />
+              Remember me on this device
+            </label>
 
             <button
               type="submit"

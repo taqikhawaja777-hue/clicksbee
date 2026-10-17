@@ -20,6 +20,12 @@ const STATUS_META: Record<
     classes: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border-indigo-500/40',
     dot: 'bg-indigo-500',
   },
+  ACTIVE_YEASTAR: {
+    label: 'Active in Yeastar Linkus Lite',
+    icon: PhoneCall,
+    classes: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-300 border-cyan-500/40',
+    dot: 'bg-cyan-500',
+  },
   ACTIVE: {
     label: 'Active',
     icon: Activity,

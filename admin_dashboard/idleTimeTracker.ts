@@ -4,7 +4,7 @@
  * Always-on, whole-workday counterpart to ProductivityCaptureService (which
  * only runs for the duration of one Task Session). Tracks mouse/keyboard
  * idle time and which application is focused for the entire day, with
- * dedicated recognition of Cisco Jabber and Wildix, and reports cumulative
+ * dedicated recognition of Cisco Jabber, Wildix, and Yeastar Linkus Lite, and reports cumulative
  * daily totals to the productivity-tracking FastAPI service's
  * `POST /api/idle-time/log` — the backend that replaced screen-recording
  * monitoring on the Manager Supervisor Portal.
@@ -37,7 +37,7 @@
 import { powerMonitor, ipcMain } from 'electron';
 import { PRODUCTIVITY_SERVICE_URL } from './serverConfig';
 
-export type ActiveAppLabel = 'Cisco Jabber' | 'Wildix' | 'Other';
+export type ActiveAppLabel = 'Cisco Jabber' | 'Wildix' | 'Yeastar Linkus Lite' | 'Other';
 
 const IDLE_THRESHOLD_SECONDS = 300; // 5 minutes, per spec (configurable)
 const POLL_INTERVAL_MS = 20000; // 20s, within the requested 15-30s range
@@ -49,6 +49,7 @@ const API_BASE_URL_DEFAULT = PRODUCTIVITY_SERVICE_URL;
 // is the one place that needs updating if a match turns out wrong.
 const JABBER_SIGNATURES = [/cisco\s*jabber/i, /^ciscojabber\.exe$/i];
 const WILDIX_SIGNATURES = [/wildix/i, /^wixphone\.exe$/i, /^x-bees\.exe$/i];
+const YEASTAR_SIGNATURES = [/yeastar|yeaster|linkus/i];
 
 interface ActiveWinResult {
   owner?: { name?: string; path?: string };
@@ -63,6 +64,7 @@ function classifyActiveApp(win: ActiveWinResult | null): ActiveAppLabel {
   for (const candidate of candidates) {
     if (JABBER_SIGNATURES.some((re) => re.test(candidate))) return 'Cisco Jabber';
     if (WILDIX_SIGNATURES.some((re) => re.test(candidate))) return 'Wildix';
+    if (YEASTAR_SIGNATURES.some((re) => re.test(candidate))) return 'Yeastar Linkus Lite';
   }
   return 'Other';
 }

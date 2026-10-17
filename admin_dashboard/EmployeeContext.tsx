@@ -211,7 +211,7 @@ function mapBackendStatusToSessionStatus(status: string): SessionState['status']
     case 'ON_BREAK':
       return 'On Break';
     default:
-      // ACTIVE | ACTIVE_JABBER | ACTIVE_WILDIX | IDLE | AWAY - all "checked
+      // ACTIVE | ACTIVE_JABBER | ACTIVE_WILDIX | ACTIVE_YEASTAR | IDLE | AWAY - all "checked
       // in and not on break" states collapse to 'Present', matching the
       // pre-existing vocabulary (only 4 statuses were ever actually used).
       return 'Present';

@@ -8,6 +8,7 @@ import { PresenceVerificationCard } from './PresenceVerificationCard';
 const STATUS_BADGE: Record<IdleStatus, { label: string; classes: string }> = {
   ACTIVE_JABBER: { label: 'Active · Jabber', classes: 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50' },
   ACTIVE_WILDIX: { label: 'Active · Wildix', classes: 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-900/50' },
+  ACTIVE_YEASTAR: { label: 'Active · Yeastar Linkus Lite', classes: 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-900/50' },
   ACTIVE: { label: 'Active', classes: 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50' },
   IDLE: { label: 'Idle', classes: 'bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-900/50' },
   AWAY: { label: 'Away', classes: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700' },
@@ -54,7 +55,7 @@ export const IdleTimeView: React.FC = () => {
           </div>
           <h1 className="text-2xl font-extrabold text-slate-800 dark:text-white">Idle & Active Time Tracking</h1>
           <p className="text-xs text-slate-400 font-medium mt-0.5">
-            Mouse/keyboard input & active-window tracking — Cisco Jabber and Wildix time is broken out separately.
+            Mouse/keyboard input & active-window tracking — supported dialer time is broken out separately.
           </p>
         </div>
       </div>
@@ -130,6 +131,7 @@ export const IdleTimeView: React.FC = () => {
                   <th className="px-6 py-3 font-bold">Idle</th>
                   <th className="px-6 py-3 font-bold">Cisco Jabber</th>
                   <th className="px-6 py-3 font-bold">Wildix</th>
+                  <th className="px-6 py-3 font-bold">Yeastar Linkus Lite</th>
                   <th className="px-6 py-3 font-bold text-right">Productivity</th>
                 </tr>
               </thead>
@@ -162,6 +164,9 @@ export const IdleTimeView: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
                         {formatDuration(employee.wildixSeconds)}
+                      </td>
+                      <td className="px-6 py-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                        {formatDuration(employee.yeastarSeconds)}
                       </td>
                       <td className="px-6 py-4 text-right">
                         <ProductivityBadge score={employee.productivityPercentage} />

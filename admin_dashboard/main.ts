@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'fs';
 import path from 'path';
@@ -202,6 +202,33 @@ function createApplicationMenu(): void {
 }
 
 app.whenReady().then(() => {
+  const credentialsPath = path.join(app.getPath('userData'), 'auth-credentials.json');
+  ipcMain.handle('auth:get-saved-credentials', () => {
+    if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(credentialsPath)) return null;
+    try {
+      const stored = JSON.parse(fs.readFileSync(credentialsPath, 'utf8')) as { email: string; password: string };
+      return {
+        email: stored.email,
+        password: safeStorage.decryptString(Buffer.from(stored.password, 'base64')),
+      };
+    } catch (error) {
+      console.warn('[Auth] Saved credentials could not be decrypted:', error);
+      return null;
+    }
+  });
+  ipcMain.handle('auth:save-credentials', (_event, credentials: { email: string; password: string }) => {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('OS credential encryption is unavailable');
+    fs.writeFileSync(credentialsPath, JSON.stringify({
+      email: credentials.email,
+      password: safeStorage.encryptString(credentials.password).toString('base64'),
+    }));
+    return { success: true };
+  });
+  ipcMain.handle('auth:clear-saved-credentials', () => {
+    if (fs.existsSync(credentialsPath)) fs.unlinkSync(credentialsPath);
+    return { success: true };
+  });
+
   ipcMain.handle('updater:get-status', () => updateStatus);
   createApplicationMenu();
   // Cooperative, not a hard cap: this only changes how Windows' scheduler
