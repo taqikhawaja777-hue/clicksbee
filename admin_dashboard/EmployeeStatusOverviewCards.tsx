@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { productivityApiService } from './src/services/productivityApi.service';
+import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
 import { API_ORIGIN } from './src/services/api.service';
 
 interface MetricCardProps {
@@ -41,8 +41,8 @@ export const EmployeeStatusOverviewCards: React.FC = () => {
         let activeCount = 0;
         try {
           const [employeesList, idleSummary] = await Promise.all([
-            productivityApiService.listEmployees(),
-            productivityApiService.getIdleTimeSummary(),
+            mongoTrackingApiService.listEmployees(),
+            mongoTrackingApiService.getIdleTimeSummary(),
           ]);
           const idToEmail = new Map(employeesList.map((e) => [e.id, e.email.toLowerCase()] as const));
           const liveByEmail = new Map(

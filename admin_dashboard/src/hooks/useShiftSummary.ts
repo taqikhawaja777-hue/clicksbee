@@ -25,7 +25,7 @@
  * poll interval.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { productivityApiService, ShiftSummary } from '../services/productivityApi.service';
+import { mongoTrackingApiService, ShiftSummary } from '../services/mongoTrackingApi.service';
 
 const POLL_INTERVAL_MS = 5000;
 const TICK_INTERVAL_MS = 1000;
@@ -49,7 +49,7 @@ export function useShiftSummary(employeeId: string | null | undefined): UseShift
     const currentId = employeeIdRef.current;
     if (!currentId) return;
     try {
-      const data = await productivityApiService.getShiftSummary(currentId);
+      const data = await mongoTrackingApiService.getShiftSummary(currentId);
       setServerSummary(data);
     } catch (err) {
       console.warn('[useShiftSummary] Failed to fetch shift summary:', err);

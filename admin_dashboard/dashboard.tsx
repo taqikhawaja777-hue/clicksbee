@@ -53,8 +53,13 @@ import { TaskProductivityDashboard } from './TaskProductivityDashboard';
 import { CreateTaskPanel } from './CreateTaskPanel';
 import { MyTasksView } from './MyTasksView';
 import { useEmployee } from './EmployeeContext';
-import { apiService } from './src/services/api.service';
+import { apiService, API_ORIGIN } from './src/services/api.service';
 import { productivityApiService } from './src/services/productivityApi.service';
+
+// Camera consent/configuration still lives in the retired standalone
+// service. Keep it disabled rather than repeatedly failing requests while
+// Attendance, Productivity and Idle Time run entirely from MongoDB.
+const LEGACY_CAMERA_SERVICE_ENABLED = false;
 
 export const AdminDashboard: React.FC = () => {
   const {
@@ -137,13 +142,17 @@ export const AdminDashboard: React.FC = () => {
 
     (async () => {
       try {
-        const employee = await productivityApiService.registerEmployee(user.name || 'Employee', user.email, undefined, user.role);
-        setProductivityEmployeeId(employee.id);
-        setContextProductivityEmployeeId(employee.id);
+        if (!user.id) throw new Error('Missing MongoDB user id for activity tracking');
+        // No Supabase registration: tracking uses the signed-in MongoDB user
+        // directly, so quota exhaustion on the retired service cannot stop it.
+        setProductivityEmployeeId(user.id);
+        setContextProductivityEmployeeId(user.id);
         const electron = (window as any).require?.('electron');
         const ipcRenderer = electron?.ipcRenderer;
         if (ipcRenderer?.invoke) {
-          await ipcRenderer.invoke('start-idle-time-tracking', { employeeId: employee.id });
+          // Store raw activity snapshots against the existing MongoDB user,
+          // not the retired Supabase productivity-service employee record.
+          await ipcRenderer.invoke('start-idle-time-tracking', { employeeId: user.id, apiBaseUrl: API_ORIGIN });
           // Separate id space from the productivity_service employee above
           // (that one's a Supabase UUID) - this is the real MongoDB User id,
           // which is what captureService.ts's screenshot/vision-analysis
@@ -167,7 +176,7 @@ export const AdminDashboard: React.FC = () => {
   // it if the admin enables it mid-session, which is exactly what was
   // happening before this was a poll.
   useEffect(() => {
-    if (!productivityEmployeeId) return;
+    if (!LEGACY_CAMERA_SERVICE_ENABLED || !productivityEmployeeId) return;
 
     let cancelled = false;
 

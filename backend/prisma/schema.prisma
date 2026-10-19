@@ -144,6 +144,7 @@ model Organization {
   websiteUsage     WebsiteUsage[]
   screenshots      Screenshot[]
   productivityRecords ProductivityRecord[]
+  idleTimeLogs      IdleTimeLog[]
   policies         MonitoringPolicy[]
   auditLogs        AuditLog[]
   notifications    Notification[]
@@ -193,6 +194,7 @@ model User {
   websiteUsage        WebsiteUsage[]
   screenshots         Screenshot[]
   productivityRecords ProductivityRecord[]
+  idleTimeLogs       IdleTimeLog[]
   assignedTasks       Task[]         @relation("AssignedTasks")
   createdTasks        Task[]         @relation("CreatedTasks")
   managedProjects     Project[]      @relation("ManagedProjects")
@@ -448,6 +450,29 @@ model ProductivityRecord {
   productivityPercentage Float    @default(0)
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([organizationId, date])
+}
+
+// MongoDB-backed replacement for productivity_service's Supabase
+// idle_time_logs table. One cumulative activity snapshot per employee and
+// shift day powers the manager's live Online/Idle/Away view.
+model IdleTimeLog {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId  String   @db.ObjectId
+  userId          String   @db.ObjectId
+  date            String
+  activeSeconds   Int      @default(0)
+  idleSeconds     Int      @default(0)
+  appFocusSeconds Json     @default("{}")
+  lastActiveApp   String?
+  lastIsIdle      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)

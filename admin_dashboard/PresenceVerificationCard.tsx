@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Camera, MousePointerClick, CheckCircle2, MoonStar, ChevronDown } from 'lucide-react';
-import { productivityApiService, Employee } from './src/services/productivityApi.service';
+import { mongoTrackingApiService, Employee } from './src/services/mongoTrackingApi.service';
 import { useEmployee } from './EmployeeContext';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
 import { attachPresencePreview } from './src/services/presenceDetector';
@@ -86,7 +86,7 @@ export const PresenceVerificationCard: React.FC = () => {
   const { summary, loading } = useShiftSummary(selectedEmployeeId || null);
 
   useEffect(() => {
-    productivityApiService
+    mongoTrackingApiService
       .listEmployees()
       .then((list) => {
         setEmployees(list);
@@ -141,7 +141,7 @@ export const PresenceVerificationCard: React.FC = () => {
 
       {employees.length === 0 ? (
         <p className="text-xs text-slate-400 text-center py-8">
-          No employees registered in the productivity service yet.
+          No employees are available yet.
         </p>
       ) : !selectedEmployee?.cameraMonitoringEnabled ? (
         <div className="text-center py-8 space-y-2">

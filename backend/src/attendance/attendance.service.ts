@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { ClockInDto } from './dto/clock-in.dto';
 import { AttendanceStatus } from '@prisma/client';
-import { getShiftDayString } from '../common/utils/shift-day.util';
+import { getScheduledBreakSeconds, getShiftDayString, getShiftDayWindow, isWithinShift } from '../common/utils/shift-day.util';
 
 @Injectable()
 export class AttendanceService {
@@ -18,6 +18,9 @@ export class AttendanceService {
   }
 
   async clockIn(userId: string, organizationId: string, dto: ClockInDto) {
+    if (!isWithinShift()) {
+      throw new ForbiddenException('Check-in is allowed only from 10:00 AM to 7:00 PM (Asia/Karachi)');
+    }
     const dateStr = this.getTodayString();
 
     const existing = await this.prisma.attendance.findUnique({
@@ -71,7 +74,13 @@ export class AttendanceService {
       throw new NotFoundException('No active clock-in session found for today');
     }
 
-    const clockOut = new Date();
+    // A late click on "check out" must never turn into overtime. The shift
+    // is closed at exactly 7:00 PM PKT even if the scheduled job happened to
+    // be delayed while the server was restarting.
+    const requestedClockOut = new Date();
+    const { end } = getShiftDayWindow(dateStr);
+    const shiftEnd = new Date(end.getTime() + 1);
+    const clockOut = requestedClockOut > shiftEnd ? shiftEnd : requestedClockOut;
     const totalWorkDuration = Math.floor(
       (clockOut.getTime() - existing.clockIn.getTime()) / 1000,
     );
@@ -86,7 +95,9 @@ export class AttendanceService {
         startedAt: { gte: existing.clockIn },
       },
     });
-    const breakDuration = breaks.reduce((acc, b) => acc + (b.duration || 0), 0);
+    const manualBreakDuration = breaks.reduce((acc, b) => acc + (b.duration || 0), 0);
+    const scheduledBreakDuration = getScheduledBreakSeconds(dateStr, existing.clockIn, clockOut);
+    const breakDuration = Math.max(manualBreakDuration, scheduledBreakDuration);
 
     const idles = await this.prisma.activityEvent.findMany({
       where: {
@@ -125,7 +136,9 @@ export class AttendanceService {
     
     // If clocked in & shift active (not clocked out), compute live real-time elapsed duration
     if (record.clockIn && !record.clockOut) {
-      durationSeconds = Math.max(0, Math.floor((now.getTime() - new Date(record.clockIn).getTime()) / 1000));
+      const { end } = getShiftDayWindow(record.date);
+      const cappedNow = Math.min(now.getTime(), end.getTime() + 1);
+      durationSeconds = Math.max(0, Math.floor((cappedNow - new Date(record.clockIn).getTime()) / 1000));
     }
 
     const hrs = Math.floor(durationSeconds / 3600);

@@ -25,7 +25,7 @@
  * poll, unchanged.
  */
 import { useEffect, useRef, useState } from 'react';
-import { productivityApiService, IdleTimeSummary } from '../services/productivityApi.service';
+import { mongoTrackingApiService, IdleTimeSummary } from '../services/mongoTrackingApi.service';
 
 const POLL_INTERVAL_MS = 5000;
 export const SHIFT_STATE_CHANGED_EVENT = 'worktrackpro:shift-state-changed';
@@ -45,7 +45,7 @@ export function useIdleTimeSummary(): UseIdleTimeSummaryResult {
 
     const fetchSummary = async () => {
       try {
-        const data = await productivityApiService.getIdleTimeSummary();
+        const data = await mongoTrackingApiService.getIdleTimeSummary();
         if (!cancelled) setSummary(data);
       } catch (err) {
         console.warn('[useIdleTimeSummary] Failed to fetch idle-time summary:', err);

@@ -13,8 +13,9 @@ import {
   ChevronDown,
   Check
 } from 'lucide-react';
-import { productivityApiService } from './src/services/productivityApi.service';
+import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
 import { API_ORIGIN } from './src/services/api.service';
+import { getShiftDayKey } from './src/utils/shiftDay';
 
 export interface MonthlyAttendancePoint {
   month: string;
@@ -34,8 +35,7 @@ export interface AttendanceRecordRow {
 }
 
 function todayDateKey(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return getShiftDayKey();
 }
 
 function formatDuration(totalSeconds: number): string {
@@ -66,8 +66,8 @@ export const ManagerAttendanceView: React.FC = () => {
 
         const today = todayDateKey();
         const [todayReport, idleSummary] = await Promise.all([
-          productivityApiService.getAttendanceReport(today, today),
-          productivityApiService.getIdleTimeSummary(),
+          mongoTrackingApiService.getAttendanceReport(today, today),
+          mongoTrackingApiService.getIdleTimeSummary(today),
         ]);
         const liveByName = new Map(idleSummary.employees.map((e) => [e.employeeName, e] as const));
 
@@ -112,7 +112,7 @@ export const ManagerAttendanceView: React.FC = () => {
         const now = new Date();
         const rangeStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
         const rangeStartKey = `${rangeStart.getFullYear()}-${String(rangeStart.getMonth() + 1).padStart(2, '0')}-01`;
-        const monthlyReport = await productivityApiService.getAttendanceReport(rangeStartKey, today);
+        const monthlyReport = await mongoTrackingApiService.getAttendanceReport(rangeStartKey, today);
         const byMonth = new Map<string, { present: number; total: number }>();
         for (const row of monthlyReport.rows) {
           const monthKey = row.date.slice(0, 7); // YYYY-MM

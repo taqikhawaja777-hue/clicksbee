@@ -13,7 +13,7 @@ import { useEmployee } from './EmployeeContext';
 import { WeeklyAttendanceAnalytics, AttendanceAnalyticsData } from './WeeklyAttendanceAnalytics';
 import { EmployeeStatusOverviewCards } from './EmployeeStatusOverviewCards';
 import { EmployeeDirectoryTable } from './EmployeeDirectoryTable';
-import { productivityApiService } from './src/services/productivityApi.service';
+import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
 import { API_ORIGIN } from './src/services/api.service';
 
 interface ManagerDashboardProps {
@@ -83,7 +83,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ activeNav = 
     };
 
     const fetchProductivityOverview = () => {
-      productivityApiService
+      mongoTrackingApiService
         .getIdleTimeSummary()
         .then((summary) => {
           setAvgProductivity(summary.avgProductivityPercentage);
@@ -95,7 +95,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ activeNav = 
 
     const fetchWeeklyAttendance = () => {
       const { monday, friday } = currentWorkWeekRange();
-      productivityApiService
+      mongoTrackingApiService
         .getAttendanceReport(formatDateKey(monday), formatDateKey(friday))
         .then(({ rows }) => {
           const byDate = new Map<string, { present: number; absent: number }>();

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { productivityApiService, Employee, ShiftSummary } from './src/services/productivityApi.service';
+import { mongoTrackingApiService, Employee, ShiftSummary } from './src/services/mongoTrackingApi.service';
+import { getShiftDayKey } from './src/utils/shiftDay';
 
 const formatSeconds = (seconds: number) => {
   const h = Math.floor(seconds / 3600);
@@ -17,7 +18,7 @@ const formatSeconds = (seconds: number) => {
  * from the same single calculation every other productivity percentage in
  * the app now reads from.
  */
-const todayIsoDate = () => new Date().toISOString().split('T')[0];
+const todayIsoDate = () => getShiftDayKey();
 
 export const ManagerProductivityView: React.FC = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -29,7 +30,7 @@ export const ManagerProductivityView: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    productivityApiService
+    mongoTrackingApiService
       .listEmployees()
       .then((list) => {
         if (cancelled) return;
@@ -58,7 +59,7 @@ export const ManagerProductivityView: React.FC = () => {
 
     const fetchSummary = (showLoading: boolean) => {
       if (showLoading) setLoading(true);
-      productivityApiService
+      mongoTrackingApiService
         .getShiftSummary(selectedEmployeeId, selectedDate)
         .then((s) => {
           if (cancelled) return;

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { apiService, API_ORIGIN } from './src/services/api.service';
 import { socketService } from './src/services/socket.service';
-import { productivityApiService } from './src/services/productivityApi.service';
+import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
 import { SHIFT_STATE_CHANGED_EVENT } from './src/hooks/useIdleTimeSummary';
 
@@ -185,9 +185,7 @@ export interface EmployeeContextType {
   // Month buttons can drive real data instead of only changing which
   // button looks selected.
   fetchWeeklyHoursData: (timeframe?: 'This Week' | 'Last Week' | 'This Month') => Promise<void>;
-  // The productivity_service (Supabase) employee id - the key everything
-  // in useShiftSummary/idleTimeTracker/presenceDetector is keyed on. Set
-  // once dashboard.tsx's login bootstrap resolves it via registerEmployee.
+  // The real MongoDB User id used by the activity tracker and reports.
   productivityEmployeeId: string | null;
   setProductivityEmployeeId: (id: string) => void;
 
@@ -475,34 +473,15 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [shiftSummary]);
 
   // Check In
-  // Resolves the productivity_service employee id if dashboard.tsx's login
-  // bootstrap hasn't finished yet by the time the user clicks Check In -
-  // registerEmployee is idempotent server-side, so this is safe even if
-  // the bootstrap effect also calls it moments later.
+  // Uses the authenticated MongoDB user id. The old implementation created
+  // a second Supabase employee record here, which failed once that project
+  // was quota-restricted and prevented reporting from starting at all.
   const ensureProductivityEmployeeId = async (): Promise<string | null> => {
     if (productivityEmployeeId) return productivityEmployeeId;
-    // An admin/manager account clicking Check In (e.g. while poking around
-    // the Employee Portal view to test it) must never get registered as a
-    // tracked employee - same reasoning as dashboard.tsx's bootstrap-effect
-    // gate, applied here too since this is the OTHER path that can create
-    // a productivity_service employee row (and, from there, real
-    // shift_events - this is exactly how an admin account ended up
-    // permanently showing up on "Today, per employee" before this check
-    // existed).
     if (state.user.role !== 'EMPLOYEE') return null;
-    try {
-      const employee = await productivityApiService.registerEmployee(
-        state.user.name || 'Employee',
-        state.user.email,
-        undefined,
-        state.user.role,
-      );
-      setProductivityEmployeeId(employee.id);
-      return employee.id;
-    } catch (e) {
-      console.warn('[EmployeeContext] Failed to resolve productivity employee id:', e);
-      return null;
-    }
+    const userId = state.user.id || null;
+    if (userId) setProductivityEmployeeId(userId);
+    return userId;
   };
 
   const handleCheckIn = async () => {
@@ -510,12 +489,19 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     shiftActionInFlightRef.current = true;
     try {
       await handleCheckInImpl();
+    } catch (e) {
+      console.warn('[EmployeeContext] Check-in was refused:', e);
+      window.alert(e instanceof Error ? e.message : 'Check-in is unavailable outside scheduled shift hours.');
     } finally {
       shiftActionInFlightRef.current = false;
     }
   };
 
   const handleCheckInImpl = async () => {
+    // The authenticated MongoDB attendance endpoint enforces the 10:00 AM
+    // to 7:00 PM Karachi schedule. Do this before changing the UI so a
+    // post-shift click cannot look like a successful check-in locally.
+    await apiService.post('/attendance/clock-in', {});
     const startTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     // Triggers a real capture+upload in captureService.ts (main process)
     // via IPC, using the actual logged-in employee's id/name - it already
@@ -530,13 +516,10 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const syncShiftCheckIn = async () => {
       const id = await ensureProductivityEmployeeId();
       if (!id) return;
-      try {
-        await productivityApiService.checkInShift(id);
-        await refreshShiftSummary();
-        notifyShiftStateChanged();
-      } catch (e) {
-        console.warn('[EmployeeContext] Failed to log shift check-in:', e);
-      }
+      // The preceding MongoDB employee check-in is the authoritative write.
+      // Refresh the shared read model instead of dual-writing to Supabase.
+      await refreshShiftSummary();
+      notifyShiftStateChanged();
     };
 
     setState((prev: typeof state) => ({
@@ -555,23 +538,6 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
     }));
 
-    try {
-      const listRes = await fetch(`${API_ORIGIN}/api/v1/employees/all`);
-      if (listRes.ok) {
-        const json = await listRes.json();
-        const emps = extractEmployeeArray(json);
-        const target = emps.find((e: any) =>
-          (e.email && state.user.email && e.email.toLowerCase() === state.user.email.toLowerCase()) ||
-          (e.name && state.user.name && e.name.toLowerCase().includes(state.user.name.toLowerCase()))
-        );
-        if (target && target.id) {
-          await fetch(`${API_ORIGIN}/api/v1/employees/${target.id}/check-in`, { method: 'POST' });
-        }
-      }
-    } catch (e) {
-      console.warn('Check-in backend sync fallback:', e);
-    }
-
     await syncShiftCheckIn();
   };
 
@@ -581,12 +547,18 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     shiftActionInFlightRef.current = true;
     try {
       await handleCheckOutImpl();
+    } catch (e) {
+      console.warn('[EmployeeContext] Check-out failed:', e);
+      window.alert(e instanceof Error ? e.message : 'Unable to check out. Please try again.');
     } finally {
       shiftActionInFlightRef.current = false;
     }
   };
 
   const handleCheckOutImpl = async () => {
+    // Write first, then render the checked-out state. This avoids a local
+    // state/UI mismatch if the server cannot close the attendance record.
+    await apiService.post('/attendance/clock-out', {});
     setState((prev: typeof state) => {
       const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const todayShortDate = new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
@@ -617,36 +589,8 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       };
     });
 
-    try {
-      // Was an un-awaited .then() chain with the actual check-out POST
-      // fired from inside it - the surrounding try/catch caught nothing
-      // (nothing throws synchronously here), so any failure anywhere in
-      // this chain - network error, no matching employee, non-2xx
-      // response - silently vanished as an unhandled rejection. That left
-      // Attendance.clockOut permanently null for real check-outs (visible
-      // once something actually read it - TimelineService's "Clocked Out"
-      // entry, and the Logs page's Checked Out rows, both silently missing
-      // it) even though the user genuinely checked out. Mirrors
-      // handleCheckInImpl's already-correct awaited pattern above.
-      const listRes = await fetch(`${API_ORIGIN}/api/v1/employees/all`);
-      if (listRes.ok) {
-        const json = await listRes.json();
-        const emps = extractEmployeeArray(json);
-        const target = emps.find((e: any) =>
-          (e.email && state.user.email && e.email.toLowerCase() === state.user.email.toLowerCase()) ||
-          (e.name && state.user.name && e.name.toLowerCase().includes(state.user.name.toLowerCase()))
-        );
-        if (target && target.id) {
-          await fetch(`${API_ORIGIN}/api/v1/employees/${target.id}/check-out`, { method: 'POST' });
-        }
-      }
-    } catch (e) {
-      console.warn('Check-out backend sync fallback:', e);
-    }
-
     if (productivityEmployeeId) {
       try {
-        await productivityApiService.checkOutShift(productivityEmployeeId);
         await refreshShiftSummary();
         notifyShiftStateChanged();
         // Refresh the Weekly Productivity Breakdown chart, This Month
@@ -752,7 +696,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       const rangeStart = toDateStr(buckets[0].start);
       const rangeEnd = toDateStr(buckets[buckets.length - 1].end);
-      const report = await productivityApiService.getAttendanceReport(rangeStart, rangeEnd);
+      const report = await mongoTrackingApiService.getAttendanceReport(rangeStart, rangeEnd);
       const rows = (report?.rows || []).filter((r) => r.employeeId === productivityEmployeeId);
 
       const newData: DayHours[] = buckets.map((b) => {
@@ -792,7 +736,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     try {
       const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const report = await productivityApiService.getAttendanceReport(toDateStr(monthStart), toDateStr(now));
+      const report = await mongoTrackingApiService.getAttendanceReport(toDateStr(monthStart), toDateStr(now));
       const rows = (report?.rows || []).filter((r) => r.employeeId === productivityEmployeeId);
 
       const presentDays = rows.filter((r) => r.attendanceStatus === 'PRESENT').length;
@@ -834,7 +778,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const now = new Date();
       const rangeStart = new Date(now);
       rangeStart.setDate(rangeStart.getDate() - 29);
-      const report = await productivityApiService.getAttendanceReport(toDateStr(rangeStart), toDateStr(now));
+      const report = await mongoTrackingApiService.getAttendanceReport(toDateStr(rangeStart), toDateStr(now));
       const rows = (report?.rows || [])
         .filter((r) => r.employeeId === productivityEmployeeId)
         .sort((a, b) => (a.date < b.date ? 1 : -1));

@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { EmployeesModule } from './employees/employees.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { SessionsModule } from './sessions/sessions.module';
+import { TrackingModule } from './tracking/tracking.module';
 import { BreaksModule } from './breaks/breaks.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { DevicesModule } from './devices/devices.module';
@@ -40,12 +42,17 @@ import { HealthController } from './health.controller';
       ttl: 60,
       limit: 100,
     }]),
+    // Shift-end checkout is a core application job, so register the
+    // scheduler at the application root rather than as a side effect of a
+    // cleanup feature module.
+    ScheduleModule.forRoot(),
     PrismaModule,
     RedisModule,
     AuthModule,
     EmployeesModule,
     AttendanceModule,
     SessionsModule,
+    TrackingModule,
     BreaksModule,
     DashboardModule,
     DevicesModule,

@@ -262,6 +262,8 @@ export interface DailyReportRow {
   productivityPercentage: number;
   cameraActiveSeconds: number;
   combinedActiveSeconds: number;
+  /** False means no desktop activity snapshot reached MongoDB for this day. */
+  hasActivitySnapshot?: boolean;
 }
 
 export interface ReportRows {

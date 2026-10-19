@@ -24,6 +24,13 @@ async function bootstrap() {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
+  // Vite/Electron development may be opened through either hostname. They
+  // are the same local machine, but browsers treat their origins as
+  // different; allow both so a local sign-in reaches MongoDB instead of
+  // failing at the browser CORS layer before credentials are checked.
+  for (const localOrigin of ['http://localhost:5173', 'http://127.0.0.1:5173']) {
+    if (!frontendOrigins.includes(localOrigin)) frontendOrigins.push(localOrigin);
+  }
 
   app.enableCors({
     // A packaged Electron app loads its renderer via loadFile() (file://),

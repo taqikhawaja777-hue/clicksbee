@@ -83,25 +83,32 @@ async function checkOnCallStatus(_appLabel: ActiveAppLabel): Promise<boolean> {
 const KARACHI_OFFSET_MS = 5 * 60 * 60 * 1000;
 const SHIFT_END_MINUTES_OF_DAY = 19 * 60; // 19:00 - the org's single fixed shift is 10:00-19:00
 
-// The shift-day bucket a timestamp belongs to: rolls over at the shift's
-// 19:00 Asia/Karachi end, not local midnight, so one shift's activity
-// stays under one day bucket. Must match shift_day() in
-// productivity_service/app/services/productivity.py exactly, or
-// idle_time_logs (written from here) would disagree with shift_events/
-// presence_logs (written server-side) on what day it is - computed
-// explicitly in Asia/Karachi rather than trusting the machine's own OS
-// timezone setting, so a deployed machine misconfigured to a different
-// zone can't silently desync from the server.
+const SHIFT_START_MINUTES_OF_DAY = 10 * 60;
+const SCHEDULED_BREAKS = [
+  { start: 13 * 60 + 30, end: 14 * 60 + 10 }, // Lunch & Zuhr
+  { start: 17 * 60, end: 17 * 60 + 20 }, // Tea & Asar
+];
+
+// Every shift is its Karachi calendar date. After 19:00 no new activity is
+// tracked; the next workday starts when employees can check in at 10:00.
 function getShiftDayKey(d: Date = new Date()): string {
   const karachi = new Date(d.getTime() + KARACHI_OFFSET_MS);
-  const minutesOfDay = karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
-  if (minutesOfDay >= SHIFT_END_MINUTES_OF_DAY) {
-    karachi.setUTCDate(karachi.getUTCDate() + 1);
-  }
   const year = karachi.getUTCFullYear();
   const month = String(karachi.getUTCMonth() + 1).padStart(2, '0');
   const day = String(karachi.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function getKarachiMinutesOfDay(d: Date = new Date()): number {
+  const karachi = new Date(d.getTime() + KARACHI_OFFSET_MS);
+  return karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
+}
+
+function isTrackableWorkTime(d: Date = new Date()): boolean {
+  const minutes = getKarachiMinutesOfDay(d);
+  return minutes >= SHIFT_START_MINUTES_OF_DAY
+    && minutes < SHIFT_END_MINUTES_OF_DAY
+    && !SCHEDULED_BREAKS.some((period) => minutes >= period.start && minutes < period.end);
 }
 
 class IdleTimeTracker {
@@ -150,6 +157,12 @@ class IdleTimeTracker {
     // upserts as "the whole day's cumulative total" (see class doc comment).
     void this.resumeFromExistingSnapshot().finally(() => {
       if (!this.isTracking) return; // stop() may have raced this
+      // Do not make a newly logged-in employee wait for the first 20-second
+      // poll and then the 90-second batch timer before the manager can see
+      // them. That gap made an active portal user look offline immediately
+      // after login/check-in. Publish one real snapshot as soon as the
+      // existing totals have been restored; later ticks remain batched.
+      void this.pollActivity().then(() => this.flushSnapshot());
       this.pollTimer = setInterval(() => void this.pollActivity(), POLL_INTERVAL_MS);
       this.batchTimer = setInterval(() => void this.flushSnapshot(), BATCH_INTERVAL_MS);
     });
@@ -158,9 +171,10 @@ class IdleTimeTracker {
   private async resumeFromExistingSnapshot(): Promise<void> {
     try {
       const today = this.dateKey;
-      const url = `${this.apiBaseUrl}/api/idle-time/${this.employeeId}?startDate=${today}&endDate=${today}`;
+      const url = `${this.apiBaseUrl}/api/v1/tracking/idle-snapshots?employeeId=${this.employeeId}&startDate=${today}&endDate=${today}`;
       const response = await fetch(url);
       if (!response.ok) return;
+      const payload = await response.json();
       const rows: Array<{
         date: string;
         activeSeconds: number;
@@ -168,7 +182,7 @@ class IdleTimeTracker {
         appFocusSeconds: Record<string, number>;
         lastActiveApp: string | null;
         lastIsIdle: boolean;
-      }> = await response.json();
+      }> = Array.isArray(payload) ? payload : (payload?.data || []);
       const row = rows.find((r) => r.date === today);
       if (!row) return;
 
@@ -234,10 +248,10 @@ class IdleTimeTracker {
 
   private async isOnBreak(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.apiBaseUrl}/api/shift/break-status/${this.employeeId}`);
-      if (!response.ok) return false;
-      const data = await response.json();
-      return !!data.onBreak;
+      // Activity snapshots now use the main MongoDB backend. Break state is
+      // still sourced from the portal session, so never block tracking on a
+      // retired Supabase-only break endpoint.
+      return false;
     } catch (err) {
       // Fail open: a transient productivity_service blip shouldn't
       // indefinitely freeze legitimate tracking - matches this file's
@@ -251,6 +265,14 @@ class IdleTimeTracker {
 
   private async pollActivity(): Promise<void> {
     if (!this.isTracking) return;
+
+    if (!isTrackableWorkTime()) {
+      // Scheduled prayer/tea breaks and after-hours never become idle time.
+      // Keep the existing day totals intact, simply wait for the next work
+      // minute. This prevents an evening app session from being attributed
+      // to tomorrow before tomorrow's 10 AM shift begins.
+      return;
+    }
 
     if (await this.isOnBreak()) {
       // Nothing increments during a break - activeSeconds/idleSeconds stay
@@ -296,11 +318,11 @@ class IdleTimeTracker {
     if (!this.employeeId) return;
 
     try {
-      const response = await fetch(`${this.apiBaseUrl}/api/idle-time/log`, {
+      const response = await fetch(`${this.apiBaseUrl}/api/v1/tracking/idle-snapshots`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          employeeId: this.employeeId,
+          userId: this.employeeId,
           date: this.dateKey,
           activeSeconds: Math.round(this.activeSeconds),
           idleSeconds: Math.round(this.idleSeconds),

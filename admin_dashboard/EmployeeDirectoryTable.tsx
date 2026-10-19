@@ -1,22 +1,48 @@
 import React, { useState } from 'react';
 import { Search, Plus, Edit2, Trash2, MoreVertical, ChevronDown } from 'lucide-react';
-import { productivityApiService, EmployeeIdleStatus, DailyReportRow } from './src/services/productivityApi.service';
-import { API_ORIGIN } from './src/services/api.service';
+import { apiService, API_ORIGIN } from './src/services/api.service';
+import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
+import { getShiftDayKey } from './src/utils/shiftDay';
 
 const DIRECTORY_POLL_INTERVAL_MS = 30000;
 
-function mapIdleStatusToDirectoryStatus(status: EmployeeIdleStatus['status']): 'Online' | 'Break' | 'Offline' {
+type MongoLiveStatus = {
+  employeeId: string;
+  activeSeconds: number;
+  idleSeconds: number;
+  productivityPercentage: number;
+  status: string;
+};
+
+function mapIdleStatusToDirectoryStatus(status: string): 'Online' | 'Break' | 'Offline' {
   if (status === 'ON_BREAK') return 'Break';
   if (status === 'NOT_CHECKED_IN' || status === 'CHECKED_OUT') return 'Offline';
   return 'Online'; // ACTIVE / ACTIVE_JABBER / ACTIVE_WILDIX / IDLE / AWAY - still on shift.
 }
 
+/**
+ * The employee directory can still be rendered while the separate
+ * productivity service is starting, unreachable, or has not received its
+ * first activity snapshot yet.  In that case, retain the authoritative
+ * check-in state from the main API instead of showing every employee as
+ * offline simply because a secondary live-status record is absent.
+ */
+function mapPortalStatusToDirectoryStatus(status: unknown): 'Online' | 'Break' | 'Offline' {
+  switch (String(status || '').toUpperCase()) {
+    case 'ACTIVE':
+    case 'ONLINE':
+    case 'PRESENT':
+      return 'Online';
+    case 'BREAK':
+    case 'ON_BREAK':
+      return 'Break';
+    default:
+      return 'Offline';
+  }
+}
+
 function todayDateKey(): string {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return getShiftDayKey();
 }
 
 const DEPARTMENT_OPTIONS = ['Engineering', 'Design', 'Marketing', 'Sales', 'HR'];
@@ -46,58 +72,31 @@ export const EmployeeDirectoryTable: React.FC = () => {
 
   const fetchEmployeesFromApi = async () => {
     try {
-      const res = await fetch(`${API_ORIGIN}/api/v1/employees`);
-      if (res.ok) {
-        const json = await res.json();
+      const json: any = await apiService.get('/employees');
+      {
         let list: any[] = [];
         if (Array.isArray(json)) list = json;
         else if (json?.data?.data && Array.isArray(json.data.data)) list = json.data.data;
         else if (json?.data && Array.isArray(json.data)) list = json.data;
 
         if (list.length > 0) {
-          // Cross-reference the productivity_service's real, today-scoped
-          // per-employee data, joined through employeeId -> email (its own
-          // API responses only carry employeeName, and this MongoDB list
-          // already has two different real people both named "usman
-          // khawaja" - matching by name alone would silently merge their
-          // data). The NestJS side always returned a hardcoded
-          // `productivity: 95` for every employee regardless of actual
-          // activity, which is why every row in this table showed the
-          // identical 95% - and its own `status`/`checkIn` fields are a
-          // separate, not-necessarily-current concept from here on, so
-          // once a productivity_service record exists for someone, it's
-          // used as the ONLY source of Status/Check-In/Productivity for
-          // that row rather than blending two different definitions.
-          // Falls back to Offline/--/0% (not other fake numbers) for
-          // anyone who hasn't opened the desktop app today at all.
+          // Read live desktop activity from MongoDB through the main API.
+          // The old implementation joined against the standalone FastAPI /
+          // Supabase service, so a Supabase quota restriction made every
+          // directory row fall back to Offline even while employees were
+          // actively using the desktop app.
           const today = todayDateKey();
-          let liveByEmail = new Map<string, EmployeeIdleStatus>();
-          let attendanceByEmail = new Map<string, DailyReportRow>();
+          let liveByUserId = new Map<string, MongoLiveStatus>();
           try {
-            const [employeesList, idleSummary, attendance] = await Promise.all([
-              productivityApiService.listEmployees(),
-              productivityApiService.getIdleTimeSummary(),
-              productivityApiService.getAttendanceReport(today, today),
-            ]);
-            const idToEmail = new Map(employeesList.map((e) => [e.id, e.email.toLowerCase()] as const));
-            liveByEmail = new Map(
-              idleSummary.employees
-                .map((e) => [idToEmail.get(e.employeeId), e] as const)
-                .filter((pair): pair is [string, EmployeeIdleStatus] => !!pair[0]),
-            );
-            attendanceByEmail = new Map(
-              attendance.rows
-                .map((r) => [idToEmail.get(r.employeeId), r] as const)
-                .filter((pair): pair is [string, DailyReportRow] => !!pair[0]),
-            );
+            const liveSummary = await mongoTrackingApiService.getIdleTimeSummary(today);
+            liveByUserId = new Map(liveSummary.employees.map((row) => [row.employeeId, row]));
           } catch (e) {
-            console.warn('EmployeeDirectoryTable productivity_service fetch error:', e);
+            console.warn('EmployeeDirectoryTable MongoDB live-status fetch error:', e);
           }
 
           const mapped: EmployeeDirectoryItem[] = list.map((emp: any, idx: number) => {
             const email = (emp.email || 'user@company.corp').toLowerCase();
-            const live = liveByEmail.get(email);
-            const attendanceRow = attendanceByEmail.get(email);
+            const live = liveByUserId.get(emp.id);
             return {
               id: emp.id || `emp-${idx}`,
               name: emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || 'Registered User',
@@ -105,10 +104,10 @@ export const EmployeeDirectoryTable: React.FC = () => {
               department: typeof emp.department === 'string' ? emp.department : (emp.department?.name || 'Engineering'),
               designation: emp.designation || '',
               role: emp.role || 'Full Stack Engineer',
-              checkIn: attendanceRow?.checkInAt
-                ? new Date(attendanceRow.checkInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                : '--',
-              status: live ? mapIdleStatusToDirectoryStatus(live.status) : 'Offline',
+              checkIn: emp.checkIn || '--',
+              status: live
+                ? mapIdleStatusToDirectoryStatus(live.status)
+                : mapPortalStatusToDirectoryStatus(emp.status || emp.currentStatus),
               productivity: live ? Math.round(live.productivityPercentage) : 0,
               avatar: emp.avatar || (emp.name ? emp.name.split(' ').map((n: string) => n[0]).join('').toUpperCase() : 'RU'),
               isActive: emp.isActive !== false,

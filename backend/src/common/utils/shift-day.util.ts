@@ -1,62 +1,67 @@
-/**
- * Shift-day boundary shared across the whole system.
- *
- * The org's single fixed shift is 10:00-19:00 Asia/Karachi. Every "what day
- * is this" computation - here, in productivity_service's shift_day()
- * (app/services/productivity.py), and in admin_dashboard's
- * getShiftDayKey() (idleTimeTracker.ts) - must roll over at the shift's
- * 19:00 end, not local midnight, or the same event can land in different
- * day buckets depending which of these three places computed "today".
- * Keep all three in sync if this ever changes.
- *
- * Asia/Karachi is a fixed UTC+5 offset year-round (Pakistan observes no
- * DST), so this is plain millisecond arithmetic rather than a timezone-
- * database lookup.
- */
+/** Shared 10:00-19:00 Asia/Karachi work-schedule rules. */
 const KARACHI_OFFSET_MS = 5 * 60 * 60 * 1000;
-const SHIFT_END_MINUTES_OF_DAY = 19 * 60; // 19:00
+export const SHIFT_START_MINUTES_OF_DAY = 10 * 60;
+export const SHIFT_END_MINUTES_OF_DAY = 19 * 60;
 
-/** The shift-day bucket (YYYY-MM-DD) a moment belongs to. */
-export function getShiftDayString(d: Date = new Date()): string {
-  const karachi = new Date(d.getTime() + KARACHI_OFFSET_MS);
-  const minutesOfDay = karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
-  if (minutesOfDay >= SHIFT_END_MINUTES_OF_DAY) {
-    karachi.setUTCDate(karachi.getUTCDate() + 1);
-  }
-  const year = karachi.getUTCFullYear();
-  const month = String(karachi.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(karachi.getUTCDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+// The paid schedule is nine clock hours, with one hour of automatic breaks.
+export const SCHEDULED_BREAKS = [
+  { label: 'Lunch & Zuhr Prayer', startMinutes: 13 * 60 + 30, endMinutes: 14 * 60 + 10 },
+  { label: 'Tea & Asar Prayer', startMinutes: 17 * 60, endMinutes: 17 * 60 + 20 },
+] as const;
+
+function karachiWallClock(d: Date): Date {
+  return new Date(d.getTime() + KARACHI_OFFSET_MS);
 }
 
-/**
- * Whether a moment falls at/after the shift's 19:00 Asia/Karachi end - the
- * same boundary getShiftDayString() rolls the date over at, exposed as its
- * own check for call sites that need to flag "this happened past shift
- * end" (e.g. a post-7pm check-in counting as overtime) rather than bucket
- * it into a day.
- */
-export function isPastShiftEnd(d: Date): boolean {
-  const karachi = new Date(d.getTime() + KARACHI_OFFSET_MS);
-  const minutesOfDay = karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
-  return minutesOfDay >= SHIFT_END_MINUTES_OF_DAY;
+function dayKeyFromKarachi(karachi: Date): string {
+  return `${karachi.getUTCFullYear()}-${String(karachi.getUTCMonth() + 1).padStart(2, '0')}-${String(karachi.getUTCDate()).padStart(2, '0')}`;
 }
 
-/**
- * Inclusive [start, end] window, in real UTC instants, for a given
- * shift-day bucket string ("YYYY-MM-DD" as returned by getShiftDayString):
- * 19:00 Asia/Karachi the previous calendar day through one millisecond
- * before 19:00 Asia/Karachi this calendar day. Use this instead of
- * midnight-to-midnight when filtering timestamped records by shift-day.
- */
-export function getShiftDayWindow(dayStr: string): { start: Date; end: Date } {
+function utcForKarachiDayMinute(dayStr: string, minute: number): Date {
   const [year, month, day] = dayStr.split('-').map(Number);
-  const shiftEndUtcMs = (dayOfMonth: number) =>
-    Date.UTC(year, month - 1, dayOfMonth, 0, 0, 0, 0) +
-    SHIFT_END_MINUTES_OF_DAY * 60000 -
-    KARACHI_OFFSET_MS;
+  return new Date(Date.UTC(year, month - 1, day, 0, minute, 0, 0) - KARACHI_OFFSET_MS);
+}
+
+/** A shift is assigned to its actual Karachi calendar date, never tomorrow. */
+export function getShiftDayString(d: Date = new Date()): string {
+  return dayKeyFromKarachi(karachiWallClock(d));
+}
+
+export function getKarachiMinutesOfDay(d: Date = new Date()): number {
+  const karachi = karachiWallClock(d);
+  return karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
+}
+
+export function isWithinShift(d: Date = new Date()): boolean {
+  const minutes = getKarachiMinutesOfDay(d);
+  return minutes >= SHIFT_START_MINUTES_OF_DAY && minutes < SHIFT_END_MINUTES_OF_DAY;
+}
+
+export function isPastShiftEnd(d: Date = new Date()): boolean {
+  return getKarachiMinutesOfDay(d) >= SHIFT_END_MINUTES_OF_DAY;
+}
+
+export function isScheduledBreakTime(d: Date = new Date()): boolean {
+  const minutes = getKarachiMinutesOfDay(d);
+  return SCHEDULED_BREAKS.some((period) => minutes >= period.startMinutes && minutes < period.endMinutes);
+}
+
+/** Real UTC interval for the one shift on a Karachi calendar date. */
+export function getShiftDayWindow(dayStr: string): { start: Date; end: Date } {
   return {
-    start: new Date(shiftEndUtcMs(day - 1)),
-    end: new Date(shiftEndUtcMs(day) - 1),
+    start: utcForKarachiDayMinute(dayStr, SHIFT_START_MINUTES_OF_DAY),
+    end: new Date(utcForKarachiDayMinute(dayStr, SHIFT_END_MINUTES_OF_DAY).getTime() - 1),
   };
+}
+
+/** Counts scheduled-break seconds that overlap an actual interval. */
+export function getScheduledBreakSeconds(dayStr: string, from: Date, to: Date): number {
+  if (to <= from) return 0;
+  return SCHEDULED_BREAKS.reduce((total, period) => {
+    const start = utcForKarachiDayMinute(dayStr, period.startMinutes);
+    const end = utcForKarachiDayMinute(dayStr, period.endMinutes);
+    const overlapStart = Math.max(from.getTime(), start.getTime());
+    const overlapEnd = Math.min(to.getTime(), end.getTime());
+    return total + Math.max(0, Math.floor((overlapEnd - overlapStart) / 1000));
+  }, 0);
 }

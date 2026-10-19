@@ -3,21 +3,38 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { CreateEmployeeDto, UpdateEmployeeDto } from './dto/employee.dto';
-import { getShiftDayString } from '../common/utils/shift-day.util';
+import { getShiftDayString, getShiftDayWindow, isPastShiftEnd, isWithinShift } from '../common/utils/shift-day.util';
 import * as argon2 from 'argon2';
 import * as bcrypt from 'bcryptjs';
 
 @Injectable()
-export class EmployeesService {
+export class EmployeesService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
   ) {}
+
+  /**
+   * Recover from a restart or missed cron trigger. If the backend starts
+   * after 7 PM, every still-open attendance row for today's completed shift
+   * is closed at 7:00 PM PKT immediately.
+   */
+  async onModuleInit() {
+    try {
+      const closed = await this.closeCompletedShiftAttendance();
+      if (closed > 0) {
+        console.log(`[EmployeesService] Reconciled ${closed} employee(s) after shift end.`);
+      }
+    } catch (error) {
+      console.error('[EmployeesService] Shift-end reconciliation failed:', error);
+    }
+  }
 
   private async hashPassword(password: string): Promise<string> {
     try {
@@ -124,7 +141,7 @@ export class EmployeesService {
         return {
           ...u,
           name: `${u.firstName} ${u.lastName}`,
-          currentStatus: parsedStatus.status || 'OFFLINE',
+          currentStatus: isWithinShift() ? (parsedStatus.status || 'OFFLINE') : 'OFFLINE',
           lastSeen: u.lastLoginAt,
           productivity: 85,
         };
@@ -178,7 +195,7 @@ export class EmployeesService {
     return {
       ...user,
       name: `${user.firstName} ${user.lastName}`,
-      currentStatus: parsedStatus.status || 'OFFLINE',
+      currentStatus: isWithinShift() ? (parsedStatus.status || 'OFFLINE') : 'OFFLINE',
       productivity: 85,
     };
   }
@@ -307,10 +324,13 @@ export class EmployeesService {
 
       const isOnBreak = latestBreak && !latestBreak.endedAt;
 
+      // No presence signal is valid outside 10 AM-7 PM PKT. This protects
+      // the directory even if a desktop client or Redis still has an old
+      // heartbeat after the shift-end auto-checkout.
       let status = 'INACTIVE';
-      if (isOnBreak) {
+      if (isWithinShift() && isOnBreak) {
         status = 'BREAK';
-      } else if (hasActiveAttendance || hasActiveSession || isRecentlyActive) {
+      } else if (isWithinShift() && (hasActiveAttendance || hasActiveSession || isRecentlyActive)) {
         status = 'ACTIVE';
       }
 
@@ -358,6 +378,9 @@ export class EmployeesService {
       throw new NotFoundException('Employee not found');
     }
 
+    if (!isWithinShift()) {
+      throw new ForbiddenException('Check-in is allowed only from 10:00 AM to 7:00 PM (Asia/Karachi)');
+    }
     const dateStr = getShiftDayString();
     const now = new Date();
 
@@ -411,11 +434,14 @@ export class EmployeesService {
     }
 
     const dateStr = getShiftDayString();
-    const now = new Date();
+    const requestedCheckout = new Date();
+    const { end } = getShiftDayWindow(dateStr);
+    const shiftEnd = new Date(end.getTime() + 1);
+    const now = requestedCheckout > shiftEnd ? shiftEnd : requestedCheckout;
 
     // Update Attendance
     await this.prisma.attendance.updateMany({
-      where: { userId: user.id, date: dateStr },
+      where: { userId: user.id, date: dateStr, clockOut: null },
       data: { clockOut: now },
     });
 
@@ -444,22 +470,64 @@ export class EmployeesService {
    */
   @Cron('0 19 * * *', { timeZone: 'Asia/Karachi' })
   async autoCheckoutAtShiftEnd() {
-    const openSessions = await this.prisma.workSession.findMany({
-      where: { endedAt: null },
-      select: { userId: true },
-      distinct: ['userId'],
+    const closed = await this.closeCompletedShiftAttendance();
+    if (closed > 0) {
+      console.log(`[EmployeesService] Auto-checkout at shift end: checked out ${closed} employee(s).`);
+    }
+  }
+
+  /** Close all of today's open records at precisely 7:00 PM Asia/Karachi. */
+  private async closeCompletedShiftAttendance(): Promise<number> {
+    if (!isPastShiftEnd()) return 0;
+
+    const dateStr = getShiftDayString();
+    const { start, end } = getShiftDayWindow(dateStr);
+    const shiftEnd = new Date(end.getTime() + 1);
+    const openAttendance = await this.prisma.attendance.findMany({
+      where: { date: dateStr, clockOut: null },
+      select: { id: true, userId: true, clockIn: true },
     });
 
-    for (const { userId } of openSessions) {
-      try {
-        await this.checkOutEmployee(userId);
-      } catch (e) {
-        console.error(`[EmployeesService] Auto-checkout failed for user ${userId}:`, e);
-      }
-    }
+    if (openAttendance.length === 0) return 0;
 
-    if (openSessions.length > 0) {
-      console.log(`[EmployeesService] Auto-checkout at shift end: checked out ${openSessions.length} employee(s).`);
-    }
+    await Promise.all(openAttendance.map((record) => {
+      const workedSeconds = Math.max(
+        0,
+        Math.floor((shiftEnd.getTime() - new Date(record.clockIn).getTime()) / 1000),
+      );
+      return this.prisma.attendance.update({
+        where: { id: record.id },
+        data: { clockOut: shiftEnd, totalWorkDuration: workedSeconds },
+      });
+    }));
+
+    const userIds = [...new Set(openAttendance.map((record) => record.userId))];
+    await this.prisma.workSession.updateMany({
+      where: {
+        userId: { in: userIds },
+        endedAt: null,
+        startedAt: { gte: start, lte: shiftEnd },
+      },
+      data: { endedAt: shiftEnd, status: 'COMPLETED' },
+    });
+
+    // An open manual break must not leak into the next day's state.
+    const openBreaks = await this.prisma.breakSession.findMany({
+      where: {
+        userId: { in: userIds },
+        endedAt: null,
+        startedAt: { gte: start, lte: shiftEnd },
+      },
+      select: { id: true, startedAt: true },
+    });
+    await Promise.all(openBreaks.map((record) => this.prisma.breakSession.update({
+      where: { id: record.id },
+      data: {
+        endedAt: shiftEnd,
+        duration: Math.max(0, Math.floor((shiftEnd.getTime() - record.startedAt.getTime()) / 1000)),
+      },
+    })));
+
+    return userIds.length;
   }
 }

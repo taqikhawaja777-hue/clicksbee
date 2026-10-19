@@ -19,7 +19,7 @@ import {
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { apiService } from './src/services/api.service';
-import { productivityApiService, DailyReportRow } from './src/services/productivityApi.service';
+import { mongoTrackingApiService, DailyReportRow } from './src/services/mongoTrackingApi.service';
 
 export interface MonthlyReportPoint {
   month: string;
@@ -64,7 +64,7 @@ export const ReportsView: React.FC = () => {
     const today = formatKarachiDate(now);
 
     setChartLoading(true);
-    productivityApiService
+    mongoTrackingApiService
       .getAttendanceReport(startOfYear, today)
       .then(({ rows }) => {
         const byMonth = new Map<string, { present: number; total: number }>();
@@ -148,7 +148,7 @@ export const ReportsView: React.FC = () => {
       let body: any[][] = [];
 
       if (reportType === 'Attendance Report') {
-        const { rows } = await productivityApiService.getAttendanceReport(startDate, endDate);
+        const { rows } = await mongoTrackingApiService.getAttendanceReport(startDate, endDate);
         const present = rows.filter((r: DailyReportRow) => r.attendanceStatus === 'PRESENT');
         headers = ['Employee Name', 'Date', 'Check In', 'Check Out', 'Hours Worked', 'Status'];
         body = present.map((r: DailyReportRow) => [
@@ -160,19 +160,20 @@ export const ReportsView: React.FC = () => {
           r.attendanceStatus,
         ]);
       } else if (reportType === 'Productivity Report') {
-        const { rows } = await productivityApiService.getProductivityReport(startDate, endDate);
+        const { rows } = await mongoTrackingApiService.getProductivityReport(startDate, endDate);
         const present = rows.filter((r: DailyReportRow) => r.attendanceStatus === 'PRESENT');
-        headers = ['Employee Name', 'Date', 'Active', 'Idle', 'Productivity %', 'Cisco Jabber', 'Wildix', 'Yeastar Linkus Lite', 'Camera-Confirmed'];
+        headers = ['Employee Name', 'Date', 'Activity Tracking', 'Active', 'Idle', 'Productivity %', 'Cisco Jabber', 'Wildix', 'Yeastar Linkus Lite', 'Camera-Confirmed'];
         body = present.map((r: DailyReportRow) => [
           r.employeeName,
           r.date,
-          formatHM(r.activeSeconds),
-          formatHM(r.idleSeconds),
-          `${r.productivityPercentage}%`,
-          formatHM(r.jabberSeconds),
-          formatHM(r.wildixSeconds),
-          formatHM(r.yeastarSeconds),
-          formatHM(r.cameraActiveSeconds),
+          r.hasActivitySnapshot ? 'Captured' : 'Not captured',
+          r.hasActivitySnapshot ? formatHM(r.activeSeconds) : '—',
+          r.hasActivitySnapshot ? formatHM(r.idleSeconds) : '—',
+          r.hasActivitySnapshot ? `${r.productivityPercentage}%` : '—',
+          r.hasActivitySnapshot ? formatHM(r.jabberSeconds) : '—',
+          r.hasActivitySnapshot ? formatHM(r.wildixSeconds) : '—',
+          r.hasActivitySnapshot ? formatHM(r.yeastarSeconds) : '—',
+          r.hasActivitySnapshot ? formatHM(r.cameraActiveSeconds) : '—',
         ]);
       } else if (reportType === 'Screenshot Report') {
         const query = new URLSearchParams({ startDate, endDate, limit: '5000' });
