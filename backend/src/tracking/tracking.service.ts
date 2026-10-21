@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
 import { getScheduledBreakSeconds, getShiftDayString, getShiftDayWindow, isScheduledBreakTime, isWithinShift } from '../common/utils/shift-day.util';
 
 export interface IdleSnapshotInput {
@@ -16,7 +17,32 @@ type AppFocus = Record<string, number>;
 
 @Injectable()
 export class TrackingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
+  ) {}
+
+  async getCameraConfig() {
+    const raw = await this.redis.get('config:camera');
+    if (!raw) {
+      return { globallyEnabled: true, employeeConfigs: {} };
+    }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return { globallyEnabled: true, employeeConfigs: {} };
+    }
+  }
+
+  async updateCameraConfig(dto: { globallyEnabled?: boolean; employeeConfigs?: Record<string, boolean> }) {
+    const current = await this.getCameraConfig();
+    const next = {
+      globallyEnabled: dto.globallyEnabled !== undefined ? dto.globallyEnabled : current.globallyEnabled,
+      employeeConfigs: { ...current.employeeConfigs, ...(dto.employeeConfigs || {}) },
+    };
+    await this.redis.set('config:camera', JSON.stringify(next));
+    return next;
+  }
 
   async upsertIdleSnapshot(input: IdleSnapshotInput) {
     this.assertDate(input.date);
@@ -79,18 +105,26 @@ export class TrackingService {
     const attendanceRatio = row.shiftDurationSeconds ? Math.round((row.activeSeconds / row.shiftDurationSeconds) * 100) : 0;
     const appFocusScore = row.activeSeconds ? Math.round((dialerSeconds / row.activeSeconds) * 100) : 0;
     const idlePenaltyPoints = Math.min(100, Math.round(Math.max(0, row.idleSeconds - 300) / 60));
+    const complianceScore = Math.max(0, 100 - idlePenaltyPoints);
+
+    // Overall Productivity formula: 70% App Focus + 15% Compliance + 15% Attendance
+    const productivityPercentage = (row.activeSeconds > 0 || row.shiftDurationSeconds > 0)
+      ? Math.round(appFocusScore * 0.70 + complianceScore * 0.15 + attendanceRatio * 0.15)
+      : 0;
+
     return {
       ...row,
+      productivityPercentage,
       combinedActiveSeconds: row.activeSeconds,
       attendanceRatio,
       appFocusScore,
-      complianceScore: Math.max(0, 100 - idlePenaltyPoints),
+      complianceScore,
       complianceBreakdown: {
         idlePenaltyPoints, lateReturnPenaltyPoints: 0, washroomPenaltyPoints: 0,
         idleSeconds: row.idleSeconds, idleThresholdSeconds: 300, lateReturnCount: 0,
         washroomBreakCount: 0, washroomOverLimitCount: 0, washroomOverDurationCount: 0,
       },
-      weightsUsed: { attendanceWeight: 60, appFocusWeight: 20, complianceWeight: 20, callEfficiencyWeight: 0 },
+      weightsUsed: { attendanceWeight: 15, appFocusWeight: 70, complianceWeight: 15, callEfficiencyWeight: 0 },
       cameraActiveSeconds: 0,
       inputActiveSeconds: row.activeSeconds,
     };
@@ -162,7 +196,16 @@ export class TrackingService {
       const status = !attendanceRow ? 'NOT_CHECKED_IN' : attendanceRow.clockOut ? 'CHECKED_OUT'
         : breakState.isOnBreak ? 'ON_BREAK' : !idle || ageSeconds > 240 ? 'AWAY'
           : idle.lastIsIdle ? 'IDLE' : 'ACTIVE';
-      const totalTracked = activeSeconds + idleSeconds;
+      const dialerSeconds = jabberSeconds + wildixSeconds + yeastarSeconds;
+      const attendanceRatio = shiftDurationSeconds ? Math.round((activeSeconds / shiftDurationSeconds) * 100) : 0;
+      const appFocusScore = activeSeconds ? Math.round((dialerSeconds / activeSeconds) * 100) : 0;
+      const idlePenaltyPoints = Math.min(100, Math.round(Math.max(0, idleSeconds - 300) / 60));
+      const complianceScore = Math.max(0, 100 - idlePenaltyPoints);
+      // Overall Productivity formula: 70% App Focus + 15% Compliance + 15% Attendance
+      const productivityPercentage = (activeSeconds > 0 || shiftDurationSeconds > 0)
+        ? Math.round(appFocusScore * 0.70 + complianceScore * 0.15 + attendanceRatio * 0.15)
+        : 0;
+
       return {
         employeeId: user.id, userId: user.id, employeeName: `${user.firstName} ${user.lastName}`.trim(), email: user.email,
         date, checkInAt: attendanceRow?.clockIn || null, checkOutAt: attendanceRow?.clockOut || null,
@@ -173,7 +216,7 @@ export class TrackingService {
         shiftDurationSeconds,
         activeSeconds, idleSeconds, jabberSeconds, wildixSeconds, yeastarSeconds, cameraActiveSeconds: 0,
         hasActivitySnapshot: !!idle,
-        productivityPercentage: totalTracked ? Math.round((activeSeconds / totalTracked) * 100) : 0,
+        productivityPercentage,
         status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
       };
     });

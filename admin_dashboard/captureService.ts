@@ -313,11 +313,13 @@ export function startAutomated5MinScreenCaptureLoop(intervalMinutes: number = 5)
  * persist:false; the backend still broadcasts the result over WebSocket
  * for the Live Monitor page to pick up.
  */
-const LIVE_VISION_INTERVAL_MS = 25000;
+// Capture screenshot and request LLM Vision analysis every 2 minutes (120,000 ms)
+const LIVE_VISION_INTERVAL_MS = 2 * 60 * 1000;
 
-async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
-  if (!currentEmployeeContext) return;
-  if (await isEmployeeOnBreak(currentEmployeeContext.id)) return;
+async function captureAndAnalyzeForLiveMonitor(forceEmployeeId?: string): Promise<void> {
+  const targetId = forceEmployeeId || currentEmployeeContext?.id;
+  if (!targetId) return;
+  if (await isEmployeeOnBreak(targetId)) return;
   try {
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
@@ -326,11 +328,12 @@ async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
     if (!sources || sources.length === 0) return;
 
     const imageBase64 = sources[0].thumbnail.toDataURL();
+    console.log(`[CaptureService] Requesting on-demand LLM Vision analysis for ${targetId}...`);
     const response = await fetch(`${BACKEND_URL}/api/v1/monitor/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        employeeId: currentEmployeeContext.id,
+        employeeId: targetId,
         imageBase64,
         timestamp: new Date().toISOString(),
         persist: false,
@@ -338,20 +341,30 @@ async function captureAndAnalyzeForLiveMonitor(): Promise<void> {
     });
     if (!response.ok) {
       console.warn(`[CaptureService] Live vision analysis request failed: HTTP ${response.status}`);
+    } else {
+      console.log(`[CaptureService] Live vision analysis completed successfully for ${targetId}`);
     }
   } catch (err) {
     console.warn('[CaptureService] Live vision analysis capture failed:', err);
   }
 }
 
-function startLiveVisionMonitoring(): void {
-  if (liveVisionCaptureTimer) clearInterval(liveVisionCaptureTimer);
-  liveVisionCaptureTimer = setInterval(() => void captureAndAnalyzeForLiveMonitor(), LIVE_VISION_INTERVAL_MS);
-  void captureAndAnalyzeForLiveMonitor(); // don't wait 25s for the first result
+export function startLiveVisionMonitoring(targetEmployeeId?: string): void {
+  if (liveVisionCaptureTimer) {
+    clearInterval(liveVisionCaptureTimer);
+    liveVisionCaptureTimer = null;
+  }
+  const empId = targetEmployeeId || currentEmployeeContext?.id;
+  console.log(`[CaptureService] Starting on-demand 2-minute live vision monitoring for ${empId}...`);
+  // Immediate analysis at the exact moment manager selects the employee
+  void captureAndAnalyzeForLiveMonitor(empId);
+  // Schedule subsequent captures after every 2 minutes
+  liveVisionCaptureTimer = setInterval(() => void captureAndAnalyzeForLiveMonitor(empId), LIVE_VISION_INTERVAL_MS);
 }
 
-function stopLiveVisionMonitoring(): void {
+export function stopLiveVisionMonitoring(): void {
   if (liveVisionCaptureTimer) {
+    console.log('[CaptureService] Stopped live vision monitoring.');
     clearInterval(liveVisionCaptureTimer);
     liveVisionCaptureTimer = null;
   }
@@ -362,14 +375,31 @@ function stopLiveVisionMonitoring(): void {
  */
 export function registerCaptureIpcHandlers(): void {
   // Called right after a real login (see dashboard.tsx) with the actual
-  // MongoDB user id/name/role - both capture loops above were previously
-  // hardcoded to a fake 'emp-101' user that doesn't exist in the database,
-  // so every automated screenshot/analysis was silently attributed to
-  // nobody real regardless of who was actually signed in.
+  // MongoDB user id/name/role
   ipcMain.handle('set-monitor-employee-context', async (_event, employeeId: string, employeeName: string, employeeRole?: string) => {
     if (!employeeId || !employeeName) return { success: false };
     currentEmployeeContext = { id: employeeId, name: employeeName, role: employeeRole || 'Employee' };
-    startLiveVisionMonitoring();
+    // NOTE: Do NOT automatically start live vision monitoring here.
+    // Live vision monitoring is on-demand: it triggers ONLY when a manager selects
+    // this specific employee on the Live Monitoring page.
+    return { success: true };
+  });
+
+  // On-demand manager trigger: start 2-minute capture loop for specific employee
+  ipcMain.handle('start-live-vision-monitoring', async (_event, targetEmployeeId?: string) => {
+    startLiveVisionMonitoring(targetEmployeeId);
+    return { success: true };
+  });
+
+  // Stop 2-minute capture loop when manager navigates away or switches employee
+  ipcMain.handle('stop-live-vision-monitoring', async () => {
+    stopLiveVisionMonitoring();
+    return { success: true };
+  });
+
+  // Immediate single capture on-demand
+  ipcMain.handle('trigger-live-vision-capture-now', async (_event, targetEmployeeId?: string) => {
+    await captureAndAnalyzeForLiveMonitor(targetEmployeeId);
     return { success: true };
   });
 

@@ -74,8 +74,27 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
   handleDisconnect(client: Socket) {
     this.logger.log(`[MonitorGateway] Client disconnected: ${client.id}`);
+    const subs = this.managerSubscriptions.get(client.id);
+    if (subs) {
+      for (const employeeId of subs) {
+        subs.delete(employeeId);
+        if (this.getWatcherCountForEmployee(employeeId) === 0) {
+          this.server.to(`user_${employeeId}`).emit('live_monitor:stop', { employeeId });
+          this.server.to(`employee:${employeeId}`).emit('live_monitor:stop', { employeeId });
+          this.server.emit(`employee:live_watch:${employeeId}`, { action: 'stop', employeeId });
+        }
+      }
+    }
     // Cleanup subscriptions for disconnected client
     this.managerSubscriptions.delete(client.id);
+  }
+
+  private getWatcherCountForEmployee(employeeId: string): number {
+    let count = 0;
+    for (const subs of this.managerSubscriptions.values()) {
+      if (subs.has(employeeId)) count++;
+    }
+    return count;
   }
 
   /**
@@ -101,6 +120,28 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     this.logger.log(`[MonitorGateway] Manager ${client.id} subscribed to employee: ${employeeId}`);
     client.emit('manager:subscribed', { employeeId, room: roomName });
+
+    // Trigger on-demand screenshot & LLM evaluation on employee workstation (2-minute interval)
+    this.server.to(`user_${employeeId}`).emit('live_monitor:start', { employeeId, intervalMs: 120000 });
+    this.server.to(roomName).emit('live_monitor:start', { employeeId, intervalMs: 120000 });
+    this.server.emit(`employee:live_watch:${employeeId}`, { action: 'start', employeeId, intervalMs: 120000 });
+  }
+
+  /**
+   * Manager requests on-demand immediate capture for employee
+   */
+  @SubscribeMessage('manager:request_capture')
+  handleManagerRequestCapture(
+    @MessageBody() data: { employeeId: string },
+    @ConnectedSocket() client: Socket,
+  ): void {
+    const { employeeId } = data;
+    if (!employeeId) return;
+
+    this.logger.log(`[MonitorGateway] Manager ${client.id} requested on-demand capture for employee: ${employeeId}`);
+    this.server.to(`user_${employeeId}`).emit('live_monitor:trigger_now', { employeeId });
+    this.server.to(`employee:${employeeId}`).emit('live_monitor:trigger_now', { employeeId });
+    this.server.emit(`employee:live_watch:${employeeId}`, { action: 'trigger_now', employeeId });
   }
 
   /**
@@ -123,6 +164,12 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     this.logger.log(`[MonitorGateway] Manager ${client.id} unsubscribed from employee: ${employeeId}`);
     client.emit('manager:unsubscribed', { employeeId });
+
+    if (this.getWatcherCountForEmployee(employeeId) === 0) {
+      this.server.to(`user_${employeeId}`).emit('live_monitor:stop', { employeeId });
+      this.server.to(roomName).emit('live_monitor:stop', { employeeId });
+      this.server.emit(`employee:live_watch:${employeeId}`, { action: 'stop', employeeId });
+    }
   }
 
   /**

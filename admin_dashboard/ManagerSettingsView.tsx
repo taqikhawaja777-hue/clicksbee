@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Settings, Shield, Camera, Clock, Save, HardDrive, Wifi } from 'lucide-react';
-import { productivityApiService, Employee } from './src/services/productivityApi.service';
+import { mongoTrackingApiService, Employee } from './src/services/mongoTrackingApi.service';
+import { apiService } from './src/services/api.service';
 
 export const ManagerSettingsView: React.FC = () => {
   const [screenshotInterval, setScreenshotInterval] = useState<number>(10);
@@ -87,13 +88,23 @@ export const ManagerSettingsView: React.FC = () => {
   const [cameraSavedMsg, setCameraSavedMsg] = useState<boolean>(false);
 
   useEffect(() => {
-    Promise.all([productivityApiService.listEmployees(), productivityApiService.getGlobalCameraConfig()])
-      .then(([employeeList, globalConfig]) => {
+    const loadCameraSettings = async () => {
+      try {
+        setCameraSettingsLoading(true);
+        const [employeeList, config] = await Promise.all([
+          mongoTrackingApiService.listEmployees(),
+          mongoTrackingApiService.getCameraConfig(),
+        ]);
         setEmployees(employeeList);
-        setGloballyEnabled(globalConfig.globallyEnabled);
-      })
-      .catch((e) => console.warn('[ManagerSettingsView] Failed to load camera settings:', e))
-      .finally(() => setCameraSettingsLoading(false));
+        setGloballyEnabled(config.globallyEnabled);
+      } catch (e) {
+        console.warn('[ManagerSettingsView] Failed to load camera settings:', e);
+      } finally {
+        setCameraSettingsLoading(false);
+      }
+    };
+
+    void loadCameraSettings();
   }, []);
 
   const flashCameraSaved = () => {
@@ -103,8 +114,11 @@ export const ManagerSettingsView: React.FC = () => {
 
   const handleToggleGlobal = async (enabled: boolean) => {
     setGloballyEnabled(enabled);
+    setEmployees((prev) =>
+      prev.map((e) => ({ ...e, cameraMonitoringEnabled: enabled && (e.cameraMonitoringEnabled !== false) }))
+    );
     try {
-      await productivityApiService.setGlobalCameraConfig(enabled);
+      await mongoTrackingApiService.saveCameraConfig({ globallyEnabled: enabled });
       flashCameraSaved();
     } catch (e) {
       console.warn('[ManagerSettingsView] Failed to update global camera config:', e);
@@ -114,7 +128,9 @@ export const ManagerSettingsView: React.FC = () => {
   const handleToggleEmployee = async (employeeId: string, enabled: boolean) => {
     setEmployees((prev) => prev.map((e) => (e.id === employeeId ? { ...e, cameraMonitoringEnabled: enabled } : e)));
     try {
-      await productivityApiService.setEmployeeCameraConfig(employeeId, enabled);
+      await mongoTrackingApiService.saveCameraConfig({
+        employeeConfigs: { [employeeId]: enabled },
+      });
       flashCameraSaved();
     } catch (e) {
       console.warn('[ManagerSettingsView] Failed to update employee camera config:', e);
@@ -351,7 +367,7 @@ export const ManagerSettingsView: React.FC = () => {
             <p className="text-xs text-slate-400 py-4">Loading employees…</p>
           ) : employees.length === 0 ? (
             <p className="text-xs text-slate-400 py-4">
-              No employees registered in the productivity service yet.
+              No employees registered in the system yet.
             </p>
           ) : (
             <div className="divide-y divide-slate-100 dark:divide-slate-800">

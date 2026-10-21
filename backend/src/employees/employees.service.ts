@@ -272,24 +272,27 @@ export class EmployeesService implements OnModuleInit {
     // concurrently instead of nested, with `select` limited to only the
     // fields the logic below actually reads, cut the same real query to
     // ~400-500ms once the connection pool is warm (see PrismaService).
+    const today = getShiftDayString();
+    const todayWindow = getShiftDayWindow(today);
+
     const [workSessions, attendance, breakSessions, screenshots] = await Promise.all([
       this.prisma.workSession.findMany({
-        where: { userId: { in: userIds } },
+        where: { userId: { in: userIds }, startedAt: { gte: todayWindow.start, lte: todayWindow.end } },
         select: { userId: true, startedAt: true, endedAt: true },
         orderBy: { startedAt: 'desc' },
       }),
       this.prisma.attendance.findMany({
-        where: { userId: { in: userIds } },
+        where: { userId: { in: userIds }, date: today },
         select: { userId: true, clockIn: true, clockOut: true },
         orderBy: { clockIn: 'desc' },
       }),
       this.prisma.breakSession.findMany({
-        where: { userId: { in: userIds } },
+        where: { userId: { in: userIds }, startedAt: { gte: todayWindow.start, lte: todayWindow.end } },
         select: { userId: true, startedAt: true, endedAt: true },
         orderBy: { startedAt: 'desc' },
       }),
       this.prisma.screenshot.findMany({
-        where: { userId: { in: userIds } },
+        where: { userId: { in: userIds }, capturedAt: { gte: todayWindow.start } },
         select: { userId: true, capturedAt: true },
         orderBy: { capturedAt: 'desc' },
       }),
@@ -334,10 +337,10 @@ export class EmployeesService implements OnModuleInit {
         status = 'ACTIVE';
       }
 
-      // Extract real formatted Check-In timestamp
+      // Extract real formatted Check-In timestamp in Asia/Karachi time zone
       const checkInDate = latestAttendance?.clockIn || latestSession?.startedAt || (isRecentlyActive ? latestScreenshot?.capturedAt : null);
       const checkInStr = checkInDate
-        ? new Date(checkInDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        ? new Date(checkInDate).toLocaleTimeString('en-US', { timeZone: 'Asia/Karachi', hour: '2-digit', minute: '2-digit' })
         : '--';
 
       const initials = `${u.firstName?.[0] || 'E'}${u.lastName?.[0] || 'E'}`.toUpperCase();
@@ -357,6 +360,7 @@ export class EmployeesService implements OnModuleInit {
         isActive: u.isActive,
         status: status, // 'ACTIVE' (Online), 'BREAK' (Break), 'INACTIVE' (Offline)
         checkIn: checkInStr,
+        checkInAt: checkInDate ? checkInDate.toISOString() : null,
         productivity: 95,
         createdAt: u.createdAt,
       };

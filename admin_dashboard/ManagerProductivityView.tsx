@@ -94,7 +94,7 @@ export const ManagerProductivityView: React.FC = () => {
         <div>
           <h3 className="text-xl font-bold text-slate-800 dark:text-white">Overall Productivity</h3>
           <p className="text-xs text-slate-400 mt-1">
-            Real Attendance Ratio + App Focus Score + Compliance Score, computed by the unified productivity formula - recalculated per employee, per day selected below.
+            Real 70% App Focus + 15% Compliance Score + 15% Attendance Ratio, computed by the unified productivity formula - recalculated per employee, per day selected below.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -145,7 +145,7 @@ export const ManagerProductivityView: React.FC = () => {
               <p className="text-xs font-medium text-indigo-100">Overall Productivity</p>
               <h4 className="text-4xl font-extrabold mt-2">{summary.productivityPercentage}%</h4>
               <p className="text-xs text-indigo-100 mt-1">
-                {summary.weightsUsed.attendanceWeight}% Attendance + {summary.weightsUsed.appFocusWeight}% App Focus + {summary.weightsUsed.complianceWeight}% Compliance
+                {summary.weightsUsed.appFocusWeight}% App Focus + {summary.weightsUsed.complianceWeight}% Compliance + {summary.weightsUsed.attendanceWeight}% Attendance
               </p>
             </div>
 

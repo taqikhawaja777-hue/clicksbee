@@ -99,7 +99,11 @@ export type IdleStatus =
 export interface EmployeeIdleStatus {
   employeeId: string;
   employeeName: string;
+  email?: string;
   date: string;
+  checkInAt?: string | null;
+  checkOutAt?: string | null;
+  attendanceStatus?: 'PRESENT' | 'ABSENT';
   activeSeconds: number;
   idleSeconds: number;
   jabberSeconds: number;

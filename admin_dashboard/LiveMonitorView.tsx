@@ -99,10 +99,17 @@ export const LiveMonitorView: React.FC = () => {
   useEffect(() => {
     if (!selectedEmployeeId) return;
 
-    // 1. Initial Fetch when employee is selected - a one-time DB read so
-    // the card isn't empty for the first ~10s before the first live
-    // WebSocket push arrives.
+    // 1. Initial Fetch when employee is selected
     fetchAiSummary(selectedEmployeeId);
+
+    // If running in Electron on workstation, trigger immediate on-demand live vision capture
+    const electron = (window as any).require?.('electron');
+    if (electron?.ipcRenderer) {
+      electron.ipcRenderer.invoke('start-live-vision-monitoring', selectedEmployeeId);
+    }
+
+    // Trigger on-demand capture across WebSocket for remote workstation agent
+    socketService.requestCapture(selectedEmployeeId);
 
     // A recurring poll used to re-fetch this same DB read every 60s and
     // fully replace the card's state with it (setAiSummary(data), not a
@@ -151,7 +158,7 @@ export const LiveMonitorView: React.FC = () => {
       // immediately trigger a DB re-fetch (see the note above) right after
       // this handler had just correctly merged the live data in - the two
       // listeners were fighting over the same event on every single
-      // 10-second cycle.
+      // 2-minute cycle.
       socketService.on(`employee:update:${selectedEmployeeId}`, handleEmployeeUpdate);
     } catch (e) {
       console.warn('Socket connection error:', e);
@@ -159,6 +166,10 @@ export const LiveMonitorView: React.FC = () => {
 
     // Cleanup socket listener on unmount or user change
     return () => {
+      const electron = (window as any).require?.('electron');
+      if (electron?.ipcRenderer) {
+        electron.ipcRenderer.invoke('stop-live-vision-monitoring');
+      }
       if (handleEmployeeUpdate) socketService.off(`employee:update:${selectedEmployeeId}`, handleEmployeeUpdate);
       socketService.unsubscribe(selectedEmployeeId);
     };
@@ -254,6 +265,25 @@ export const LiveMonitorView: React.FC = () => {
                       </select>
                       <ChevronDown className="w-3.5 h-3.5 text-indigo-300 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
+
+                    {/* On-demand trigger button: requests screenshot & LLM analysis at that exact moment */}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!selectedEmployeeId) return;
+                        const electron = (window as any).require?.('electron');
+                        if (electron?.ipcRenderer) {
+                          await electron.ipcRenderer.invoke('trigger-live-vision-capture-now', selectedEmployeeId);
+                        }
+                        socketService.requestCapture(selectedEmployeeId);
+                        await fetchAiSummary(selectedEmployeeId);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold rounded-xl transition shadow cursor-pointer"
+                      title="Request immediate screenshot & LLM vision analysis for this employee"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                      <span>Analyze Live Now</span>
+                    </button>
                     {/* Department badge - real, from MongoDB, used to give
                         the vision LLM job-appropriate context rather than
                         judging every screen the same way. */}
@@ -447,7 +477,7 @@ export const LiveMonitorView: React.FC = () => {
                     </div>
                   ) : (
                     <p className="text-xs text-indigo-300/60 italic py-2">
-                      {isResigned ? 'Not monitored - employee has resigned.' : 'No live detection data yet - updates every 10 seconds while this employee is checked in.'}
+                      {isResigned ? 'Not monitored - employee has resigned.' : 'No live detection data yet - updates every 2 minutes while this employee is checked in.'}
                     </p>
                   )}
                 </div>

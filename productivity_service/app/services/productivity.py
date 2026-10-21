@@ -81,9 +81,9 @@ GRACE_PERIOD_SECONDS = 120
 # error) - mirrors that migration's column defaults exactly, so behavior is
 # identical whether the row exists or not. See get_productivity_config().
 DEFAULT_PRODUCTIVITY_CONFIG = {
-    "attendance_weight": 40.0,
-    "app_focus_weight": 30.0,
-    "compliance_weight": 30.0,
+    "attendance_weight": 15.0,
+    "app_focus_weight": 70.0,
+    "compliance_weight": 15.0,
     "call_efficiency_weight": 0.0,
     "idle_penalty_threshold_seconds": 1800,
     "idle_penalty_points_per_minute": 1.0,

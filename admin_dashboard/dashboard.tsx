@@ -1,3 +1,4 @@
+import { socketService } from './src/services/socket.service';
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, 
@@ -55,6 +56,7 @@ import { MyTasksView } from './MyTasksView';
 import { useEmployee } from './EmployeeContext';
 import { apiService, API_ORIGIN } from './src/services/api.service';
 import { productivityApiService } from './src/services/productivityApi.service';
+import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
 
 // Camera consent/configuration still lives in the retired standalone
 // service. Keep it disabled rather than repeatedly failing requests while
@@ -170,28 +172,71 @@ export const AdminDashboard: React.FC = () => {
     })();
   }, [isAuthenticated, user.email, user.name, user.role]);
 
-  // Poll (rather than check once) whether an admin has turned camera
-  // monitoring on for this employee, since that can happen at any time
-  // after the app is already open — a one-time check at login would miss
-  // it if the admin enables it mid-session, which is exactly what was
-  // happening before this was a poll.
+  // Remote live monitor listener: when manager selects this employee on Live Monitor,
+  // trigger screenshot capture immediately and on 2-minute intervals.
   useEffect(() => {
-    if (!LEGACY_CAMERA_SERVICE_ENABLED || !productivityEmployeeId) return;
+    if (!user.id) return;
+    const electron = (window as any).require?.('electron');
+    const ipcRenderer = electron?.ipcRenderer;
+    if (!ipcRenderer) return;
+
+    const onLiveStart = (data: any) => {
+      if (!data?.employeeId || data.employeeId === user.id) {
+        ipcRenderer.invoke('start-live-vision-monitoring', user.id);
+      }
+    };
+    const onLiveStop = (data: any) => {
+      if (!data?.employeeId || data.employeeId === user.id) {
+        ipcRenderer.invoke('stop-live-vision-monitoring', user.id);
+      }
+    };
+    const onTriggerNow = (data: any) => {
+      if (!data?.employeeId || data.employeeId === user.id) {
+        ipcRenderer.invoke('trigger-live-vision-capture-now', user.id);
+      }
+    };
+
+    socketService.on(`employee:live_watch:${user.id}`, (data: any) => {
+      if (data?.action === 'start') onLiveStart(data);
+      else if (data?.action === 'stop') onLiveStop(data);
+      else if (data?.action === 'trigger_now') onTriggerNow(data);
+    });
+    socketService.on('live_monitor:start', onLiveStart);
+    socketService.on('live_monitor:stop', onLiveStop);
+    socketService.on('live_monitor:trigger_now', onTriggerNow);
+
+    return () => {
+      socketService.off(`employee:live_watch:${user.id}`, () => {});
+      socketService.off('live_monitor:start', onLiveStart);
+      socketService.off('live_monitor:stop', onLiveStop);
+      socketService.off('live_monitor:trigger_now', onTriggerNow);
+    };
+  }, [user.id]);
+
+  // Poll whether an admin has turned camera monitoring on for this employee,
+  // matching mongoTrackingApiService camera config.
+  useEffect(() => {
+    if (!productivityEmployeeId) return;
 
     let cancelled = false;
 
     const checkCameraConfig = async () => {
       if (cancelled || cameraDetectionStartedRef.current) return;
       try {
-        const cameraConfig = await productivityApiService.getCameraConfig(productivityEmployeeId);
-        if (!cameraConfig.effectiveEnabled) return;
+        const config = await mongoTrackingApiService.getCameraConfig();
+        const empEnabled = config.employeeConfigs[productivityEmployeeId] !== undefined
+          ? config.employeeConfigs[productivityEmployeeId]
+          : true;
+        const effectiveEnabled = config.globallyEnabled && empEnabled;
+        if (!effectiveEnabled) return;
 
-        const existingConsent = await productivityApiService.getCameraConsent(productivityEmployeeId);
+        const consentKey = `camera_consent_${productivityEmployeeId}`;
+        const existingConsent = localStorage.getItem(consentKey);
         if (cancelled) return;
 
         if (!existingConsent) {
           setCameraConsentEmployeeId((prev) => prev ?? productivityEmployeeId);
-        } else if (existingConsent.consented) {
+        } else if (existingConsent === 'granted') {
           cameraDetectionStartedRef.current = true;
           const { presenceDetectionService } = await import('./src/services/presenceDetector');
           presenceDetectionService.start(productivityEmployeeId);
@@ -214,7 +259,7 @@ export const AdminDashboard: React.FC = () => {
     if (!employeeId) return;
     setCameraConsentEmployeeId(null);
     try {
-      await productivityApiService.recordCameraConsent(employeeId, consented);
+      localStorage.setItem(`camera_consent_${employeeId}`, consented ? 'granted' : 'declined');
       if (consented) {
         cameraDetectionStartedRef.current = true;
         const { presenceDetectionService } = await import('./src/services/presenceDetector');

@@ -42,22 +42,90 @@ const StatCard: React.FC<StatCardProps> = ({ label, seconds, icon: Icon, accent 
  */
 const CameraPreviewCard: React.FC<{ seconds: number }> = ({ seconds }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [cameraActive, setCameraActive] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    let animId: number;
+    let stream: MediaStream | null = null;
+    let video: HTMLVideoElement | null = null;
+    let cancelled = false;
+
     attachPresencePreview(canvasRef.current);
-    return () => attachPresencePreview(null);
+
+    const startCamera = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 } },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        video = document.createElement('video');
+        video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
+        await video.play();
+
+        setCameraActive(true);
+
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+
+        const renderFrame = () => {
+          if (cancelled || !canvas || !video) return;
+          if (video.readyState >= 2) {
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+          }
+          animId = requestAnimationFrame(renderFrame);
+        };
+        renderFrame();
+      } catch (err: any) {
+        console.warn('[CameraPreviewCard] Camera stream error:', err);
+        setErrorMsg('Camera access unavailable or in use by another app');
+      }
+    };
+
+    void startCamera();
+
+    return () => {
+      cancelled = true;
+      if (animId) cancelAnimationFrame(animId);
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (video) {
+        video.srcObject = null;
+        video.remove();
+      }
+      attachPresencePreview(null);
+    };
   }, []);
 
   return (
     <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-slate-400">Camera-Confirmed Active</span>
-        <div className="p-2.5 rounded-2xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600">
+        <div className="p-2.5 rounded-2xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 flex items-center gap-1.5">
           <Camera className="w-5 h-5" />
+          {cameraActive && <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />}
         </div>
       </div>
-      <div className="mt-4 rounded-xl overflow-hidden bg-slate-900 aspect-video">
+      <div className="mt-4 rounded-xl overflow-hidden bg-slate-900 aspect-video relative flex items-center justify-center">
         <canvas ref={canvasRef} className="w-full h-full object-cover" />
+        {errorMsg && (
+          <p className="absolute inset-0 flex items-center justify-center p-3 text-center text-xs text-rose-400 bg-slate-900/90 font-medium">
+            {errorMsg}
+          </p>
+        )}
+        {!cameraActive && !errorMsg && (
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400 text-xs gap-2">
+            <Camera className="w-4 h-4 animate-spin text-indigo-400" />
+            <span>Activating camera…</span>
+          </div>
+        )}
       </div>
       <p className="mt-2 text-[10px] text-slate-400 font-medium">Live - visible only to you, never recorded</p>
       <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">{formatDuration(seconds)} confirmed today</p>
@@ -151,43 +219,24 @@ export const PresenceVerificationCard: React.FC = () => {
             Settings to see presence-verification stats here.
           </p>
         </div>
-      ) : loading && !summary ? (
-        <p className="text-xs text-slate-400 text-center py-8">Loading presence data…</p>
-      ) : !summary || summary.sampleCount === 0 ? (
-        <div className="text-center py-8 space-y-2">
-          <Camera className="w-9 h-9 text-indigo-400 mx-auto" />
-          <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-            No presence checks logged yet today — either the employee hasn't opened the desktop app, or hasn't
-            consented to camera monitoring.
-          </p>
-        </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {selectedEmployee?.email.toLowerCase() === user.email.toLowerCase() ? (
-            <CameraPreviewCard seconds={summary.cameraActiveSeconds} />
-          ) : (
-            <StatCard
-              label="Camera-Confirmed Active"
-              seconds={summary.cameraActiveSeconds}
-              icon={Camera}
-              accent="bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600"
-            />
-          )}
+          <CameraPreviewCard seconds={summary?.cameraActiveSeconds || 0} />
           <StatCard
             label="Input-Confirmed Active"
-            seconds={summary.activeSeconds}
+            seconds={summary?.activeSeconds || 0}
             icon={MousePointerClick}
             accent="bg-purple-50 dark:bg-purple-950/50 text-purple-600"
           />
           <StatCard
             label="Combined Active (Camera Checks)"
-            seconds={summary.combinedActiveSeconds}
+            seconds={summary?.combinedActiveSeconds || 0}
             icon={CheckCircle2}
             accent="bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600"
           />
           <StatCard
             label="Idle/Away (Today)"
-            seconds={summary.idleSeconds}
+            seconds={summary?.idleSeconds || 0}
             icon={MoonStar}
             accent="bg-amber-50 dark:bg-amber-950/50 text-amber-600"
           />

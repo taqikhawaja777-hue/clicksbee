@@ -122,6 +122,24 @@ class SocketService {
   }
 
   /**
+   * Request on-demand screenshot & analysis now for an employee
+   */
+  requestCapture(employeeId: string): void {
+    if (!employeeId) return;
+    this.connect();
+    this.socket?.emit('manager:request_capture', { employeeId });
+    console.log(`[SocketService] Requested on-demand capture for employee: ${employeeId}`);
+  }
+
+  /**
+   * Emit an event through socket
+   */
+  emit(event: string, ...args: any[]): void {
+    this.connect();
+    this.socket?.emit(event, ...args);
+  }
+
+  /**
    * Listen for a specific event
    */
   on(event: string, callback: (...args: any[]) => void): void {

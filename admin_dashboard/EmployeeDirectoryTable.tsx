@@ -12,6 +12,10 @@ type MongoLiveStatus = {
   idleSeconds: number;
   productivityPercentage: number;
   status: string;
+  checkInAt?: string | null;
+  checkOutAt?: string | null;
+  attendanceStatus?: string;
+  isCheckedIn?: boolean;
 };
 
 function mapIdleStatusToDirectoryStatus(status: string): 'Online' | 'Break' | 'Offline' {
@@ -86,17 +90,36 @@ export const EmployeeDirectoryTable: React.FC = () => {
           // directory row fall back to Offline even while employees were
           // actively using the desktop app.
           const today = todayDateKey();
-          let liveByUserId = new Map<string, MongoLiveStatus>();
+          const liveByUserId = new Map<string, MongoLiveStatus>();
+          const liveByEmail = new Map<string, MongoLiveStatus>();
           try {
             const liveSummary = await mongoTrackingApiService.getIdleTimeSummary(today);
-            liveByUserId = new Map(liveSummary.employees.map((row) => [row.employeeId, row]));
+            liveSummary.employees.forEach((row) => {
+              if (row.employeeId) liveByUserId.set(row.employeeId, row);
+              if ((row as any).userId) liveByUserId.set((row as any).userId, row);
+              if ((row as any).email) liveByEmail.set(String((row as any).email).toLowerCase(), row);
+            });
           } catch (e) {
             console.warn('EmployeeDirectoryTable MongoDB live-status fetch error:', e);
           }
 
           const mapped: EmployeeDirectoryItem[] = list.map((emp: any, idx: number) => {
             const email = (emp.email || 'user@company.corp').toLowerCase();
-            const live = liveByUserId.get(emp.id);
+            const live = liveByUserId.get(emp.id) || (emp.email ? liveByEmail.get(email) : undefined);
+
+            // Accurate Check-In time calculation:
+            // Prefer today's live checkInAt (matching Attendance Records view exactly),
+            // or emp.checkInAt formatted in the user's local timezone.
+            // If the employee is absent or hasn't checked in today, show '--'.
+            let checkIn = '--';
+            const checkInIso = live?.checkInAt || emp.checkInAt;
+            if (checkInIso) {
+              checkIn = new Date(checkInIso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } else if (emp.checkIn && emp.checkIn !== '--' && live?.attendanceStatus !== 'ABSENT') {
+              // Fallback to emp.checkIn only if employee is not marked absent today
+              checkIn = emp.checkIn;
+            }
+
             return {
               id: emp.id || `emp-${idx}`,
               name: emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || 'Registered User',
@@ -104,7 +127,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
               department: typeof emp.department === 'string' ? emp.department : (emp.department?.name || 'Engineering'),
               designation: emp.designation || '',
               role: emp.role || 'Full Stack Engineer',
-              checkIn: emp.checkIn || '--',
+              checkIn,
               status: live
                 ? mapIdleStatusToDirectoryStatus(live.status)
                 : mapPortalStatusToDirectoryStatus(emp.status || emp.currentStatus),

@@ -15,6 +15,18 @@ export class TrackingController {
 
   // Electron submits a snapshot before a renderer can necessarily refresh a
   // JWT. Reads intended for the portals below remain authenticated.
+  @Get('camera-config')
+  @ApiOperation({ summary: 'Get camera monitoring configuration' })
+  getCameraConfig() {
+    return this.trackingService.getCameraConfig();
+  }
+
+  @Post('camera-config')
+  @ApiOperation({ summary: 'Update camera monitoring configuration' })
+  updateCameraConfig(@Body() body: any) {
+    return this.trackingService.updateCameraConfig(body);
+  }
+
   @Post('idle-snapshots')
   @ApiOperation({ summary: 'Upsert a desktop activity snapshot in MongoDB' })
   upsertIdleSnapshot(@Body() body: IdleSnapshotInput) {

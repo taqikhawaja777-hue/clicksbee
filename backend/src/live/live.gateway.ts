@@ -77,11 +77,11 @@ export class LiveGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
     this.liveWatchers.get(targetUserId)!.add(client.id);
 
-    // Notify employee agent to start streaming ~10-15s interval captures
+    // Notify employee agent to start streaming on 2-minute interval captures
     this.server.to(`user_${targetUserId}`).emit('live_stream_requested', {
       managerId: client.data.user?.sub,
       targetUserId,
-      intervalMs: 10000,
+      intervalMs: 120000,
     });
 
     return { status: 'subscribed', room: roomName, activeWatchers: this.liveWatchers.get(targetUserId)!.size };
