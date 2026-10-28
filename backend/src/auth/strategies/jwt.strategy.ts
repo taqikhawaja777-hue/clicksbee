@@ -21,6 +21,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       secretOrKey: configService.get<string>('JWT_SECRET') || 'super-secret-jwt-access-key-stitchmonitor-2026',
+      clockTolerance: 30, // 30 seconds clock skew tolerance
     });
   }
 

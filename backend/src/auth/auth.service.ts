@@ -4,11 +4,12 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as argon2 from 'argon2';
 import * as bcrypt from 'bcryptjs';
 import { RegisterDto } from './dto/register.dto';
@@ -20,6 +21,8 @@ import { Role } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -46,8 +49,9 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto) {
+    const cleanEmail = (dto.email || '').trim().toLowerCase();
     const existingUser = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
+      where: { email: cleanEmail },
     });
 
     if (existingUser) {
@@ -111,7 +115,7 @@ export class AuthService {
         organizationId: org.id,
         firstName: dto.firstName,
         lastName: dto.lastName,
-        email: dto.email.toLowerCase(),
+        email: cleanEmail,
         passwordHash,
         role: dto.role || Role.ADMIN,
         departmentId,
@@ -130,22 +134,28 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
+    const cleanEmail = (dto.email || '').trim().toLowerCase();
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
+      where: { email: cleanEmail },
     });
 
     if (!user) {
+      this.logger.warn(`Login failed: user not found for email="${cleanEmail}"`);
       throw new UnauthorizedException('Invalid email or password');
     }
 
     if (!user.isActive) {
+      this.logger.warn(`Login failed: account is deactivated for email="${cleanEmail}" (userId=${user.id})`);
       throw new UnauthorizedException('Account has been deactivated');
     }
 
     const isPasswordValid = await this.verifyPassword(user.passwordHash, dto.password);
     if (!isPasswordValid) {
+      this.logger.warn(`Login failed: invalid password for email="${cleanEmail}" (userId=${user.id})`);
       throw new UnauthorizedException('Invalid email or password');
     }
+
+    this.logger.log(`Login succeeded for email="${cleanEmail}" (userId=${user.id}, role=${user.role})`);
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -178,58 +188,85 @@ export class AuthService {
   }
 
   async refreshTokens(dto: RefreshTokenDto) {
-    try {
-      const refreshSecret =
-        this.configService.get<string>('JWT_REFRESH_SECRET') ||
-        'super-secret-jwt-refresh-key-stitchmonitor-2026';
-      const payload = this.jwtService.verify(dto.refreshToken, { secret: refreshSecret });
+    const refreshSecret =
+      this.configService.get<string>('JWT_REFRESH_SECRET') ||
+      'super-secret-jwt-refresh-key-stitchmonitor-2026';
 
-      // A user can hold several non-revoked refresh token rows at once —
-      // every login/register issues a new one without revoking earlier
-      // ones (only logout/change-password/a successful refresh do that) —
-      // so the row for THIS specific token can't be found by userId
-      // alone. tokenHash is a salted argon2/bcrypt hash, so the only way
-      // to identify which row a presented token belongs to is to verify
-      // it against each non-revoked candidate rather than a direct
-      // query. Using findFirst() here previously could grab an unrelated
-      // valid-but-different row for the same user and fail verification
-      // against a perfectly valid, just-issued refresh token.
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(dto.refreshToken, {
+        secret: refreshSecret,
+        clockTolerance: 30,
+      });
+    } catch (e: any) {
+      this.logger.warn(`Refresh token verification error: ${e?.message}`);
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    const sha256Hash = createHash('sha256').update(dto.refreshToken).digest('hex');
+
+    // 1. O(1) indexed lookup by SHA-256 hash
+    let tokenRecord = await this.prisma.refreshToken.findFirst({
+      where: {
+        userId: payload.sub,
+        tokenHash: { in: [sha256Hash, `sha256:${sha256Hash}`] },
+      },
+    });
+
+    // 2. Backward compatibility fallback for legacy bcrypt/argon2 tokens
+    if (!tokenRecord) {
       const candidates = await this.prisma.refreshToken.findMany({
         where: {
           userId: payload.sub,
           isRevoked: false,
         },
+        take: 10,
       });
 
-      let tokenRecord: (typeof candidates)[number] | undefined;
       for (const candidate of candidates) {
         if (await this.verifyPassword(candidate.tokenHash, dto.refreshToken)) {
           tokenRecord = candidate;
           break;
         }
       }
+    }
 
-      if (!tokenRecord || new Date() > tokenRecord.expiresAt) {
+    if (!tokenRecord) {
+      this.logger.warn(`Refresh failed: token record not found for userId=${payload.sub}`);
+      throw new UnauthorizedException('Refresh token is expired or revoked');
+    }
+
+    // 3. Grace window for concurrent requests:
+    // If this token was revoked within the last 30s by a racing parallel request from the same client,
+    // grant the refresh and return valid tokens rather than logging out the employee!
+    if (tokenRecord.isRevoked) {
+      const tokenAge = tokenRecord.createdAt ? Date.now() - new Date(tokenRecord.createdAt).getTime() : Infinity;
+      const isWithinGrace = tokenRecord.replacedByToken || tokenAge < 30000;
+      if (!isWithinGrace) {
+        this.logger.warn(`Refresh failed: token is revoked for userId=${payload.sub}`);
         throw new UnauthorizedException('Refresh token is expired or revoked');
       }
-
-      await this.prisma.refreshToken.update({
-        where: { id: tokenRecord.id },
-        data: { isRevoked: true },
-      });
-
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.sub },
-      });
-
-      if (!user || !user.isActive) {
-        throw new UnauthorizedException('User no longer exists or is inactive');
-      }
-
-      return await this.generateTokens(user.id, user.email, user.role, user.organizationId);
-    } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token');
     }
+
+    if (new Date() > tokenRecord.expiresAt) {
+      this.logger.warn(`Refresh failed: token expired at ${tokenRecord.expiresAt.toISOString()} for userId=${payload.sub}`);
+      throw new UnauthorizedException('Refresh token is expired or revoked');
+    }
+
+    await this.prisma.refreshToken.update({
+      where: { id: tokenRecord.id },
+      data: { isRevoked: true },
+    });
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('User no longer exists or is inactive');
+    }
+
+    return await this.generateTokens(user.id, user.email, user.role, user.organizationId);
   }
 
   async logout(userId: string) {
@@ -357,7 +394,7 @@ export class AuthService {
       expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d',
     });
 
-    const tokenHash = await this.hashPassword(refreshToken);
+    const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 

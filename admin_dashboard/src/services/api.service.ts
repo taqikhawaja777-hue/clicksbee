@@ -141,6 +141,9 @@ class ApiService {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken: this.refreshToken }),
         });
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(`Refresh unauthorized: HTTP ${response.status}`);
+        }
         if (!response.ok) {
           throw new Error(`Refresh failed: HTTP ${response.status}`);
         }
@@ -154,7 +157,7 @@ class ApiService {
           window.dispatchEvent(new CustomEvent('auth:refreshed'));
         }
         return tokens.accessToken as string;
-      } catch (err) {
+      } catch (err: any) {
         // The refresh token itself is gone (expired past 7d, revoked, or
         // invalid) - unlike a plain access-token expiry, there's no way
         // to self-heal from this without a real re-login.
