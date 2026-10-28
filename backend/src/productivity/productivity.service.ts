@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCategoryRuleDto } from './dto/productivity.dto';
 import { RuleType } from '@prisma/client';
+import { computeProductivityMetrics } from '../common/utils/productivity.util';
 
 @Injectable()
 export class ProductivityService {
@@ -73,10 +74,14 @@ export class ProductivityService {
     const activeSeconds = Math.max(0, productiveSeconds + unproductiveSeconds);
     const totalTrackedSeconds = activeSeconds + idleSeconds + breakSeconds;
 
-    const productivityPercentage =
-      totalTrackedSeconds > 0
-        ? Math.round((productiveSeconds / totalTrackedSeconds) * 100 * 10) / 10
-        : 0;
+    const metrics = computeProductivityMetrics({
+      activeSeconds,
+      idleSeconds,
+      dialerSeconds: productiveSeconds,
+      shiftDurationSeconds: totalTrackedSeconds,
+      breakSeconds,
+    });
+    const productivityPercentage = metrics.productivityPercentage;
 
     const record = await this.prisma.productivityRecord.upsert({
       where: {

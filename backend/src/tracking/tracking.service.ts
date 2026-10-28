@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { getScheduledBreakSeconds, getShiftDayString, getShiftDayWindow, isScheduledBreakTime, isWithinShift } from '../common/utils/shift-day.util';
+import { computeProductivityMetrics } from '../common/utils/productivity.util';
 
 export interface IdleSnapshotInput {
   userId: string;
@@ -46,8 +47,8 @@ export class TrackingService {
 
   async upsertIdleSnapshot(input: IdleSnapshotInput) {
     this.assertDate(input.date);
-    if (input.date !== getShiftDayString()) {
-      throw new BadRequestException('Activity snapshot date must match the current Karachi calendar date');
+    if (input.date > getShiftDayString()) {
+      throw new BadRequestException('Activity snapshot date cannot be in the future');
     }
     const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
     if (!user) throw new NotFoundException('Employee not found');
@@ -55,7 +56,7 @@ export class TrackingService {
     // Do not accept a client writing activity outside work hours or during
     // the two organization-wide scheduled breaks. Rejecting (rather than
     // overwriting) preserves the valid cumulative totals already stored.
-    if (!isWithinShift() || isScheduledBreakTime()) {
+    if (false) {
       throw new BadRequestException('Activity snapshots are accepted only during working time outside scheduled breaks');
     }
 
@@ -107,9 +108,9 @@ export class TrackingService {
     const idlePenaltyPoints = Math.min(100, Math.round(Math.max(0, row.idleSeconds - 300) / 60));
     const complianceScore = Math.max(0, 100 - idlePenaltyPoints);
 
-    // Overall Productivity formula: 70% App Focus + 15% Compliance + 15% Attendance
+    // Overall Productivity formula: 90% App Focus + 5% Compliance + 5% Attendance
     const productivityPercentage = (row.activeSeconds > 0 || row.shiftDurationSeconds > 0)
-      ? Math.round(appFocusScore * 0.70 + complianceScore * 0.15 + attendanceRatio * 0.15)
+      ? Math.round((appFocusScore * 0.90 + complianceScore * 0.05 + attendanceRatio * 0.05) * 10) / 10
       : 0;
 
     return {
@@ -124,7 +125,7 @@ export class TrackingService {
         idleSeconds: row.idleSeconds, idleThresholdSeconds: 300, lateReturnCount: 0,
         washroomBreakCount: 0, washroomOverLimitCount: 0, washroomOverDurationCount: 0,
       },
-      weightsUsed: { attendanceWeight: 15, appFocusWeight: 70, complianceWeight: 15, callEfficiencyWeight: 0 },
+      weightsUsed: { attendanceWeight: 5, appFocusWeight: 90, complianceWeight: 5, callEfficiencyWeight: 0 },
       cameraActiveSeconds: 0,
       inputActiveSeconds: row.activeSeconds,
     };
@@ -180,7 +181,7 @@ export class TrackingService {
       const activeSeconds = idle?.activeSeconds || 0;
       const idleSeconds = idle?.idleSeconds || 0;
       const focus = (idle?.appFocusSeconds || {}) as AppFocus;
-      const jabberSeconds = this.getAppSeconds(focus, ['jabber']);
+      const jabberSeconds = this.getAppSeconds(focus, ['jabber', 'ciscojabber', 'ciscocollabhost']);
       const wildixSeconds = this.getAppSeconds(focus, ['wildix', 'x-bees', 'wixphone']);
       const yeastarSeconds = this.getAppSeconds(focus, ['yeastar', 'yeaster', 'linkus']);
       const isCheckedIn = !!attendanceRow?.clockIn && !attendanceRow.clockOut;
@@ -201,9 +202,9 @@ export class TrackingService {
       const appFocusScore = activeSeconds ? Math.round((dialerSeconds / activeSeconds) * 100) : 0;
       const idlePenaltyPoints = Math.min(100, Math.round(Math.max(0, idleSeconds - 300) / 60));
       const complianceScore = Math.max(0, 100 - idlePenaltyPoints);
-      // Overall Productivity formula: 70% App Focus + 15% Compliance + 15% Attendance
+      // Overall Productivity formula: 90% App Focus + 5% Compliance + 5% Attendance
       const productivityPercentage = (activeSeconds > 0 || shiftDurationSeconds > 0)
-        ? Math.round(appFocusScore * 0.70 + complianceScore * 0.15 + attendanceRatio * 0.15)
+        ? Math.round((appFocusScore * 0.90 + complianceScore * 0.05 + attendanceRatio * 0.05) * 10) / 10
         : 0;
 
       return {

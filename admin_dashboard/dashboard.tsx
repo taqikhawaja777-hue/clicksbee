@@ -170,7 +170,7 @@ export const AdminDashboard: React.FC = () => {
         idleTrackingStartedRef.current = false;
       }
     })();
-  }, [isAuthenticated, user.email, user.name, user.role]);
+  }, [isAuthenticated, user.id, user.email, user.name, user.role]);
 
   // Remote live monitor listener: when manager selects this employee on Live Monitor,
   // trigger screenshot capture immediately and on 2-minute intervals.
