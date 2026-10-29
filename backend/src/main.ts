@@ -4,7 +4,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
-import compression from 'compression';
+import * as compression from 'compression';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
@@ -21,7 +21,8 @@ async function bootstrap() {
   app.useBodyParser('urlencoded', { limit: '15mb', extended: true });
 
   app.use(helmet());
-  app.use(compression());
+  const compressionMiddleware = (compression as any).default || compression;
+  app.use(compressionMiddleware());
   const frontendOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
     .split(',')
     .map((origin) => origin.trim())

@@ -34,7 +34,7 @@ RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
 # @prisma/client (node_modules/@prisma) is just a thin wrapper that

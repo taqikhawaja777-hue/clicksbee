@@ -21,5 +21,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "exclude": ["node_modules", "dist", "prisma", "**/*.spec.ts"]
+  "exclude": ["node_modules", "dist", "prisma", "scripts", "**/*.spec.ts"]
 }
