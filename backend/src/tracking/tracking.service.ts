@@ -53,14 +53,8 @@ export class TrackingService {
     const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
     if (!user) throw new NotFoundException('Employee not found');
     const cleanSeconds = (value: number) => Math.max(0, Math.round(Number(value) || 0));
-    // Do not accept a client writing activity outside work hours or during
-    // the two organization-wide scheduled breaks. Rejecting (rather than
-    // overwriting) preserves the valid cumulative totals already stored.
-    if (false) {
-      throw new BadRequestException('Activity snapshots are accepted only during working time outside scheduled breaks');
-    }
 
-    return this.prisma.idleTimeLog.upsert({
+    const result = await this.prisma.idleTimeLog.upsert({
       where: { userId_date: { userId: user.id, date: input.date } },
       create: {
         organizationId: user.organizationId, userId: user.id, date: input.date,
@@ -74,19 +68,40 @@ export class TrackingService {
         lastIsIdle: !!input.lastIsIdle,
       },
     });
+
+    // Invalidate cached summaries for this date
+    await Promise.allSettled([
+      this.redis.del(`cache:summary:${user.organizationId}:${input.date}`),
+      this.redis.del(`cache:shiftsummary:${user.organizationId}:${user.id}:${input.date}`),
+    ]);
+
+    return result;
   }
 
   async getSummary(organizationId: string, date: string) {
+    const cacheKey = `cache:summary:${organizationId}:${date}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      try { return JSON.parse(cached); } catch { /* ignore parsing error */ }
+    }
+
     const employees = await this.getDailyRows(organizationId, date);
     const avgProductivityPercentage = employees.length
       ? Math.round(employees.reduce((sum, row) => sum + row.productivityPercentage, 0) / employees.length)
       : 0;
-    return { employees, avgProductivityPercentage };
+    const result = { employees, avgProductivityPercentage };
+    await this.redis.set(cacheKey, JSON.stringify(result), 10);
+    return result;
   }
 
   async getAttendanceReport(organizationId: string, startDate?: string, endDate?: string) {
     const { start, end } = this.getDateRange(startDate, endDate);
-    const rows = (await Promise.all(this.listDates(start, end).map((date) => this.getDailyRows(organizationId, date)))).flat();
+    const dates = this.listDates(start, end);
+    if (dates.length === 1) {
+      const rows = await this.getDailyRows(organizationId, dates[0]);
+      return { rows };
+    }
+    const rows = await this.getBatchedDailyRows(organizationId, dates);
     return { rows };
   }
 
@@ -97,38 +112,100 @@ export class TrackingService {
   async getShiftSummary(organizationId: string, userId: string, date?: string) {
     const targetDate = date || getShiftDayString();
     this.assertDate(targetDate);
-    const user = await this.prisma.user.findFirst({ where: { id: userId, organizationId }, select: { id: true } });
+    const cacheKey = `cache:shiftsummary:${organizationId}:${userId}:${targetDate}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      try { return JSON.parse(cached); } catch { /* ignore */ }
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, organizationId },
+      select: { id: true, firstName: true, lastName: true, email: true },
+    });
     if (!user) throw new NotFoundException('Employee not found');
-    const row = (await this.getDailyRows(organizationId, targetDate)).find((candidate) => candidate.employeeId === userId);
-    if (!row) throw new NotFoundException('Employee not found');
 
-    const dialerSeconds = row.jabberSeconds + row.wildixSeconds + row.yeastarSeconds;
-    const attendanceRatio = row.shiftDurationSeconds ? Math.round((row.activeSeconds / row.shiftDurationSeconds) * 100) : 0;
-    const appFocusScore = row.activeSeconds ? Math.round((dialerSeconds / row.activeSeconds) * 100) : 0;
-    const idlePenaltyPoints = Math.min(100, Math.round(Math.max(0, row.idleSeconds - 300) / 60));
-    const complianceScore = Math.max(0, 100 - idlePenaltyPoints);
+    const window = getShiftDayWindow(targetDate);
+    const now = new Date();
+    const [attendanceRow, idle, breaks] = await Promise.all([
+      this.prisma.attendance.findUnique({
+        where: { userId_date: { userId, date: targetDate } },
+        select: { clockIn: true, clockOut: true },
+      }),
+      this.prisma.idleTimeLog.findUnique({
+        where: { userId_date: { userId, date: targetDate } },
+        select: { activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, updatedAt: true },
+      }),
+      this.prisma.breakSession.findMany({
+        where: { userId, startedAt: { gte: window.start, lte: window.end } },
+        select: { startedAt: true, endedAt: true, duration: true },
+      }),
+    ]);
 
-    // Overall Productivity formula: 90% App Focus + 5% Compliance + 5% Attendance
-    const productivityPercentage = (row.activeSeconds > 0 || row.shiftDurationSeconds > 0)
-      ? Math.round((appFocusScore * 0.90 + complianceScore * 0.05 + attendanceRatio * 0.05) * 10) / 10
+    let breakSecondsSum = 0;
+    let isOnBreak = false;
+    for (const b of breaks) {
+      breakSecondsSum += b.endedAt
+        ? b.duration || Math.max(0, Math.floor((b.endedAt.getTime() - b.startedAt.getTime()) / 1000))
+        : Math.max(0, Math.floor((now.getTime() - b.startedAt.getTime()) / 1000));
+      isOnBreak ||= !b.endedAt;
+    }
+
+    const activeSeconds = idle?.activeSeconds || 0;
+    const idleSeconds = idle?.idleSeconds || 0;
+    const focus = (idle?.appFocusSeconds || {}) as AppFocus;
+    const jabberSeconds = this.getAppSeconds(focus, ['jabber', 'ciscojabber', 'ciscocollabhost']);
+    const wildixSeconds = this.getAppSeconds(focus, ['wildix', 'x-bees', 'wixphone']);
+    const yeastarSeconds = this.getAppSeconds(focus, ['yeastar', 'yeaster', 'linkus']);
+    const isCheckedIn = !!attendanceRow?.clockIn && !attendanceRow.clockOut;
+    const shiftEnd = attendanceRow?.clockOut || (isCheckedIn ? now : null);
+    const elapsedSeconds = attendanceRow?.clockIn && shiftEnd
+      ? Math.max(0, Math.floor((shiftEnd.getTime() - attendanceRow.clockIn.getTime()) / 1000)) : 0;
+    const scheduledBreakSeconds = attendanceRow?.clockIn && shiftEnd
+      ? getScheduledBreakSeconds(targetDate, attendanceRow.clockIn, shiftEnd)
       : 0;
+    const breakSeconds = Math.max(breakSecondsSum, scheduledBreakSeconds);
+    const shiftDurationSeconds = Math.max(0, elapsedSeconds - breakSeconds);
+    const ageSeconds = idle ? Math.max(0, (now.getTime() - idle.updatedAt.getTime()) / 1000) : Infinity;
+    const status = !attendanceRow ? 'NOT_CHECKED_IN' : attendanceRow.clockOut ? 'CHECKED_OUT'
+      : isOnBreak ? 'ON_BREAK' : !idle || ageSeconds > 240 ? 'AWAY'
+        : idle.lastIsIdle ? 'IDLE' : 'ACTIVE';
 
-    return {
-      ...row,
-      productivityPercentage,
-      combinedActiveSeconds: row.activeSeconds,
-      attendanceRatio,
-      appFocusScore,
-      complianceScore,
+    const metrics = computeProductivityMetrics({
+      activeSeconds,
+      idleSeconds,
+      jabberSeconds,
+      wildixSeconds,
+      yeastarSeconds,
+      shiftDurationSeconds,
+    });
+
+    const result = {
+      employeeId: user.id, userId: user.id, employeeName: `${user.firstName} ${user.lastName}`.trim(), email: user.email,
+      date: targetDate, checkInAt: attendanceRow?.clockIn || null, checkOutAt: attendanceRow?.clockOut || null,
+      stillCheckedIn: isCheckedIn, attendanceStatus: (attendanceRow ? 'PRESENT' : 'ABSENT') as 'PRESENT' | 'ABSENT',
+      isCheckedIn,
+      isOnBreak: isOnBreak || (targetDate === getShiftDayString(now) && isScheduledBreakTime(now)),
+      breakSeconds,
+      shiftDurationSeconds,
+      activeSeconds, idleSeconds, jabberSeconds, wildixSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+      hasActivitySnapshot: !!idle,
+      productivityPercentage: metrics.overallProductivityPercentage,
+      status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
+      combinedActiveSeconds: activeSeconds,
+      attendanceRatio: metrics.attendanceRatio,
+      appFocusScore: metrics.appFocusScore,
+      complianceScore: metrics.complianceScore,
       complianceBreakdown: {
-        idlePenaltyPoints, lateReturnPenaltyPoints: 0, washroomPenaltyPoints: 0,
-        idleSeconds: row.idleSeconds, idleThresholdSeconds: 300, lateReturnCount: 0,
+        idlePenaltyPoints: metrics.idlePenaltyPoints, lateReturnPenaltyPoints: 0, washroomPenaltyPoints: 0,
+        idleSeconds, idleThresholdSeconds: 300, lateReturnCount: 0,
         washroomBreakCount: 0, washroomOverLimitCount: 0, washroomOverDurationCount: 0,
       },
-      weightsUsed: { attendanceWeight: 5, appFocusWeight: 90, complianceWeight: 5, callEfficiencyWeight: 0 },
-      cameraActiveSeconds: 0,
-      inputActiveSeconds: row.activeSeconds,
+      weightsUsed: metrics.weightsUsed,
+      inputActiveSeconds: activeSeconds,
     };
+
+    await this.redis.set(cacheKey, JSON.stringify(result), 10);
+    return result;
   }
 
   async getSnapshotRange(userId: string, startDate: string, endDate: string) {
@@ -139,7 +216,7 @@ export class TrackingService {
     });
   }
 
-  /** One MongoDB projection shared by Directory, Attendance and Productivity. */
+  /** One MongoDB projection shared by Directory, Attendance and Productivity for a single day. */
   private async getDailyRows(organizationId: string, date: string) {
     this.assertDate(date);
     const window = getShiftDayWindow(date);
@@ -197,15 +274,15 @@ export class TrackingService {
       const status = !attendanceRow ? 'NOT_CHECKED_IN' : attendanceRow.clockOut ? 'CHECKED_OUT'
         : breakState.isOnBreak ? 'ON_BREAK' : !idle || ageSeconds > 240 ? 'AWAY'
           : idle.lastIsIdle ? 'IDLE' : 'ACTIVE';
-      const dialerSeconds = jabberSeconds + wildixSeconds + yeastarSeconds;
-      const attendanceRatio = shiftDurationSeconds ? Math.round((activeSeconds / shiftDurationSeconds) * 100) : 0;
-      const appFocusScore = activeSeconds ? Math.round((dialerSeconds / activeSeconds) * 100) : 0;
-      const idlePenaltyPoints = Math.min(100, Math.round(Math.max(0, idleSeconds - 300) / 60));
-      const complianceScore = Math.max(0, 100 - idlePenaltyPoints);
-      // Overall Productivity formula: 90% App Focus + 5% Compliance + 5% Attendance
-      const productivityPercentage = (activeSeconds > 0 || shiftDurationSeconds > 0)
-        ? Math.round((appFocusScore * 0.90 + complianceScore * 0.05 + attendanceRatio * 0.05) * 10) / 10
-        : 0;
+
+      const metrics = computeProductivityMetrics({
+        activeSeconds,
+        idleSeconds,
+        jabberSeconds,
+        wildixSeconds,
+        yeastarSeconds,
+        shiftDurationSeconds,
+      });
 
       return {
         employeeId: user.id, userId: user.id, employeeName: `${user.firstName} ${user.lastName}`.trim(), email: user.email,
@@ -217,10 +294,117 @@ export class TrackingService {
         shiftDurationSeconds,
         activeSeconds, idleSeconds, jabberSeconds, wildixSeconds, yeastarSeconds, cameraActiveSeconds: 0,
         hasActivitySnapshot: !!idle,
-        productivityPercentage,
+        productivityPercentage: metrics.overallProductivityPercentage,
         status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
       };
     });
+  }
+
+  /** Batched fetch across multiple days to eliminate N+1 database roundtrips. */
+  private async getBatchedDailyRows(organizationId: string, dates: string[]) {
+    const firstWindow = getShiftDayWindow(dates[0]);
+    const lastWindow = getShiftDayWindow(dates[dates.length - 1]);
+    const windowStart = firstWindow.start < lastWindow.start ? firstWindow.start : lastWindow.start;
+    const windowEnd = firstWindow.end > lastWindow.end ? firstWindow.end : lastWindow.end;
+
+    const [users, attendanceList, idleList, breakList] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { organizationId, role: 'EMPLOYEE', isActive: true },
+        select: { id: true, firstName: true, lastName: true, email: true },
+        orderBy: { firstName: 'asc' },
+      }),
+      this.prisma.attendance.findMany({
+        where: { organizationId, date: { in: dates } },
+        select: { userId: true, date: true, clockIn: true, clockOut: true },
+      }),
+      this.prisma.idleTimeLog.findMany({
+        where: { organizationId, date: { in: dates } },
+        select: { userId: true, date: true, activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, updatedAt: true },
+      }),
+      this.prisma.breakSession.findMany({
+        where: { organizationId, startedAt: { gte: windowStart, lte: windowEnd } },
+        select: { userId: true, startedAt: true, endedAt: true, duration: true },
+      }),
+    ]);
+
+    const attendanceByDateUser = new Map<string, typeof attendanceList[0]>();
+    for (const row of attendanceList) {
+      attendanceByDateUser.set(`${row.date}:${row.userId}`, row);
+    }
+
+    const idleByDateUser = new Map<string, typeof idleList[0]>();
+    for (const row of idleList) {
+      idleByDateUser.set(`${row.date}:${row.userId}`, row);
+    }
+
+    const dateWindows = new Map(dates.map((d) => [d, getShiftDayWindow(d)]));
+    const now = new Date();
+    const todayShift = getShiftDayString(now);
+
+    const rows: any[] = [];
+    for (const date of dates) {
+      const window = dateWindows.get(date)!;
+      const breakByUser = new Map<string, { seconds: number; isOnBreak: boolean }>();
+      for (const b of breakList) {
+        if (b.startedAt >= window.start && b.startedAt <= window.end) {
+          const current = breakByUser.get(b.userId) || { seconds: 0, isOnBreak: false };
+          current.seconds += b.endedAt
+            ? b.duration || Math.max(0, Math.floor((b.endedAt.getTime() - b.startedAt.getTime()) / 1000))
+            : Math.max(0, Math.floor((now.getTime() - b.startedAt.getTime()) / 1000));
+          current.isOnBreak ||= !b.endedAt;
+          breakByUser.set(b.userId, current);
+        }
+      }
+
+      for (const user of users) {
+        const attendanceRow = attendanceByDateUser.get(`${date}:${user.id}`);
+        const idle = idleByDateUser.get(`${date}:${user.id}`);
+        const breakState = breakByUser.get(user.id) || { seconds: 0, isOnBreak: false };
+        const activeSeconds = idle?.activeSeconds || 0;
+        const idleSeconds = idle?.idleSeconds || 0;
+        const focus = (idle?.appFocusSeconds || {}) as AppFocus;
+        const jabberSeconds = this.getAppSeconds(focus, ['jabber', 'ciscojabber', 'ciscocollabhost']);
+        const wildixSeconds = this.getAppSeconds(focus, ['wildix', 'x-bees', 'wixphone']);
+        const yeastarSeconds = this.getAppSeconds(focus, ['yeastar', 'yeaster', 'linkus']);
+        const isCheckedIn = !!attendanceRow?.clockIn && !attendanceRow.clockOut;
+        const shiftEnd = attendanceRow?.clockOut || (isCheckedIn ? now : null);
+        const elapsedSeconds = attendanceRow?.clockIn && shiftEnd
+          ? Math.max(0, Math.floor((shiftEnd.getTime() - attendanceRow.clockIn.getTime()) / 1000)) : 0;
+        const scheduledBreakSeconds = attendanceRow?.clockIn && shiftEnd
+          ? getScheduledBreakSeconds(date, attendanceRow.clockIn, shiftEnd)
+          : 0;
+        const breakSeconds = Math.max(breakState.seconds, scheduledBreakSeconds);
+        const shiftDurationSeconds = Math.max(0, elapsedSeconds - breakSeconds);
+        const ageSeconds = idle ? Math.max(0, (now.getTime() - idle.updatedAt.getTime()) / 1000) : Infinity;
+        const status = !attendanceRow ? 'NOT_CHECKED_IN' : attendanceRow.clockOut ? 'CHECKED_OUT'
+          : breakState.isOnBreak ? 'ON_BREAK' : !idle || ageSeconds > 240 ? 'AWAY'
+            : idle.lastIsIdle ? 'IDLE' : 'ACTIVE';
+
+        const metrics = computeProductivityMetrics({
+          activeSeconds,
+          idleSeconds,
+          jabberSeconds,
+          wildixSeconds,
+          yeastarSeconds,
+          shiftDurationSeconds,
+        });
+
+        rows.push({
+          employeeId: user.id, userId: user.id, employeeName: `${user.firstName} ${user.lastName}`.trim(), email: user.email,
+          date, checkInAt: attendanceRow?.clockIn || null, checkOutAt: attendanceRow?.clockOut || null,
+          stillCheckedIn: isCheckedIn, attendanceStatus: attendanceRow ? 'PRESENT' : 'ABSENT',
+          isCheckedIn,
+          isOnBreak: breakState.isOnBreak || (date === todayShift && isScheduledBreakTime(now)),
+          breakSeconds,
+          shiftDurationSeconds,
+          activeSeconds, idleSeconds, jabberSeconds, wildixSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+          hasActivitySnapshot: !!idle,
+          productivityPercentage: metrics.overallProductivityPercentage,
+          status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
+        });
+      }
+    }
+    return rows;
   }
 
   private getAppSeconds(focus: AppFocus, names: string[]): number {

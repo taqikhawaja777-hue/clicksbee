@@ -207,6 +207,7 @@ model User {
   consentRecords      ConsentRecord[]
 
   @@index([organizationId, role])
+  @@index([organizationId, role, isActive])
   @@index([organizationId, departmentId])
   @@index([organizationId, teamId])
 }
@@ -338,6 +339,7 @@ model BreakSession {
   workSession  WorkSession? @relation(fields: [workSessionId], references: [id])
 
   @@index([organizationId, userId])
+  @@index([organizationId, startedAt])
 }
 
 model ActivityEvent {
@@ -687,6 +689,7 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([tokenHash])
 }
 
 model License {
