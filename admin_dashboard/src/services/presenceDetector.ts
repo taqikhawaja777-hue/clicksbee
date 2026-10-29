@@ -281,6 +281,36 @@ export function attachPresencePreview(canvas: HTMLCanvasElement | null): void {
   previewCanvas = canvas;
 }
 
+export async function capturePresenceFrame(): Promise<{
+  status: 'active' | 'no_camera' | 'permission_denied' | 'error';
+  frameData?: string;
+  error?: string;
+}> {
+  try {
+    const video = await ensureCameraStream();
+    if (!video) {
+      return { status: 'no_camera', error: 'No camera attached or access unavailable' };
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(video.videoWidth || 320, 640);
+    canvas.height = Math.min(video.videoHeight || 240, 480);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return { status: 'error', error: 'Canvas rendering context unavailable' };
+    }
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const frameData = canvas.toDataURL('image/jpeg', 0.6);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    return { status: 'active', frameData };
+  } catch (err: any) {
+    const msg = err && err.message ? err.message : '';
+    if (msg.includes('Permission') || msg.includes('NotAllowedError')) {
+      return { status: 'permission_denied', error: 'Camera permission denied on employee device' };
+    }
+    return { status: 'error', error: msg || 'Camera capture failed' };
+  }
+}
+
 function drawPresencePreview(
   frame: HTMLCanvasElement,
   detection: faceapi.FaceDetection | undefined,

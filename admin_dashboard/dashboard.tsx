@@ -205,11 +205,60 @@ export const AdminDashboard: React.FC = () => {
     socketService.on('live_monitor:stop', onLiveStop);
     socketService.on('live_monitor:trigger_now', onTriggerNow);
 
+    const onCameraFrameRequest = async (data: {
+      requestId: string;
+      managerSocketId: string;
+      requesterRole: string;
+      employeeId?: string;
+    }) => {
+      if (data?.requesterRole !== 'ADMIN' && data?.requesterRole !== 'MANAGER') {
+        console.warn('[PresenceCamera] Unauthorized camera frame request ignored');
+        return;
+      }
+      if (data?.employeeId && user.id && data.employeeId !== user.id) {
+        return;
+      }
+      const consentKey = `camera_consent_${user.id || productivityEmployeeId}`;
+      const consent = localStorage.getItem(consentKey);
+      if (consent === 'declined') {
+        socketService.emit('employee:camera_frame_response', {
+          requestId: data.requestId,
+          managerSocketId: data.managerSocketId,
+          employeeId: user.id || productivityEmployeeId,
+          status: 'permission_denied',
+          error: 'Permission not granted by employee',
+        });
+        return;
+      }
+      try {
+        const { capturePresenceFrame } = await import('./src/services/presenceDetector');
+        const res = await capturePresenceFrame();
+        socketService.emit('employee:camera_frame_response', {
+          requestId: data.requestId,
+          managerSocketId: data.managerSocketId,
+          employeeId: user.id || productivityEmployeeId,
+          status: res.status,
+          frameData: res.frameData,
+          error: res.error,
+        });
+      } catch (err: any) {
+        socketService.emit('employee:camera_frame_response', {
+          requestId: data.requestId,
+          managerSocketId: data.managerSocketId,
+          employeeId: user.id || productivityEmployeeId,
+          status: 'error',
+          error: err?.message || 'Camera capture failed',
+        });
+      }
+    };
+    socketService.on('employee:request_camera_frame', onCameraFrameRequest);
+
     return () => {
       socketService.off(`employee:live_watch:${user.id}`, () => {});
       socketService.off('live_monitor:start', onLiveStart);
       socketService.off('live_monitor:stop', onLiveStop);
       socketService.off('live_monitor:trigger_now', onTriggerNow);
+      socketService.off('employee:request_camera_frame', onCameraFrameRequest);
     };
   }, [user.id]);
 

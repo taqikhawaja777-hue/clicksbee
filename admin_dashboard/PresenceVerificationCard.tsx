@@ -4,6 +4,7 @@ import { mongoTrackingApiService, Employee } from './src/services/mongoTrackingA
 import { useEmployee } from './EmployeeContext';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
 import { attachPresencePreview } from './src/services/presenceDetector';
+import { socketService } from './src/services/socket.service';
 
 function formatDuration(seconds: number): string {
   const mins = Math.round(seconds / 60);
@@ -32,18 +33,23 @@ const StatCard: React.FC<StatCardProps> = ({ label, seconds, icon: Icon, accent 
 );
 
 /**
- * Replaces the "Camera-Confirmed Active" StatCard's number with a live
- * preview of what the face detector currently sees, ONLY when this is the
- * logged-in employee's own card - the video feed comes from THIS device's
- * own camera, so it has no meaning for any other employee selected in the
- * dropdown above (there is still no video transmission between devices;
- * that invariant is untouched). Viewing someone else's data still shows
- * the plain duration number, same as before.
+ * Camera preview card:
+ * - When viewing OWN card: activates local camera preview so the employee can confirm they are in frame.
+ * - When viewing REMOTE employee (Manager viewing an employee): NEVER touches manager's local camera.
+ *   Sends an authenticated on-demand snapshot request over WebSocket to the selected employee's machine,
+ *   and renders only the employee's returned frame.
  */
-const CameraPreviewCard: React.FC<{ seconds: number }> = ({ seconds }) => {
+const CameraPreviewCard: React.FC<{
+  seconds: number;
+  employeeId: string;
+  employeeName: string;
+  isOwnCard: boolean;
+}> = ({ seconds, employeeId, employeeName, isOwnCard }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [cameraActive, setCameraActive] = useState<boolean>(false);
+  const [remoteFrame, setRemoteFrame] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [statusText, setStatusText] = useState<string>('Activating camera…');
 
   useEffect(() => {
     let animId: number;
@@ -51,58 +57,124 @@ const CameraPreviewCard: React.FC<{ seconds: number }> = ({ seconds }) => {
     let video: HTMLVideoElement | null = null;
     let cancelled = false;
 
-    attachPresencePreview(canvasRef.current);
+    setCameraActive(false);
+    setErrorMsg(null);
+    setRemoteFrame(null);
 
-    const startCamera = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 640 }, height: { ideal: 480 } },
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        video = document.createElement('video');
-        video.srcObject = stream;
-        video.muted = true;
-        video.playsInline = true;
-        await video.play();
+    if (isOwnCard) {
+      // Logged-in employee's own card: show local camera preview
+      setStatusText('Activating camera…');
+      attachPresencePreview(canvasRef.current);
 
-        setCameraActive(true);
-
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-
-        const renderFrame = () => {
-          if (cancelled || !canvas || !video) return;
-          if (video.readyState >= 2) {
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
-            ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const startCamera = async () => {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+          });
+          if (cancelled) {
+            stream.getTracks().forEach((t) => t.stop());
+            return;
           }
-          animId = requestAnimationFrame(renderFrame);
-        };
-        renderFrame();
-      } catch (err: any) {
-        console.warn('[CameraPreviewCard] Camera stream error:', err);
-        setErrorMsg('Camera access unavailable or in use by another app');
-      }
-    };
+          video = document.createElement('video');
+          video.srcObject = stream;
+          video.muted = true;
+          video.playsInline = true;
+          await video.play();
 
-    void startCamera();
+          setCameraActive(true);
 
-    return () => {
-      cancelled = true;
-      if (animId) cancelAnimationFrame(animId);
-      if (stream) stream.getTracks().forEach((t) => t.stop());
-      if (video) {
-        video.srcObject = null;
-        video.remove();
-      }
-      attachPresencePreview(null);
-    };
-  }, []);
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const ctx = canvas.getContext('2d');
+
+          const renderFrame = () => {
+            if (cancelled || !canvas || !video) return;
+            if (video.readyState >= 2) {
+              canvas.width = video.videoWidth || 640;
+              canvas.height = video.videoHeight || 480;
+              ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+            }
+            animId = requestAnimationFrame(renderFrame);
+          };
+          renderFrame();
+        } catch (err: any) {
+          console.warn('[CameraPreviewCard] Camera stream error:', err);
+          setErrorMsg('Camera access unavailable or in use by another app');
+        }
+      };
+
+      void startCamera();
+
+      return () => {
+        cancelled = true;
+        if (animId) cancelAnimationFrame(animId);
+        if (stream) stream.getTracks().forEach((t) => t.stop());
+        if (video) {
+          video.srcObject = null;
+          video.remove();
+        }
+        attachPresencePreview(null);
+      };
+    } else {
+      // Remote employee: MANAGER NEVER CALLS getUserMedia()!
+      setStatusText(`Connecting to ${employeeName}'s camera…`);
+
+      const handleRemoteFrame = (data: any) => {
+        if (cancelled || data?.employeeId !== employeeId) return;
+
+        if (data.status === 'active' && data.frameData) {
+          setRemoteFrame(data.frameData);
+          setCameraActive(true);
+          setErrorMsg(null);
+        } else if (data.status === 'offline') {
+          setCameraActive(false);
+          setRemoteFrame(null);
+          setErrorMsg('Employee offline');
+        } else if (data.status === 'disabled') {
+          setCameraActive(false);
+          setRemoteFrame(null);
+          setErrorMsg('Camera offline');
+        } else if (data.status === 'no_camera') {
+          setCameraActive(false);
+          setRemoteFrame(null);
+          setErrorMsg('No camera attached');
+        } else if (data.status === 'permission_denied') {
+          setCameraActive(false);
+          setRemoteFrame(null);
+          setErrorMsg('Permission not granted');
+        } else {
+          setCameraActive(false);
+          setRemoteFrame(null);
+          setErrorMsg(data.error || 'Camera offline');
+        }
+      };
+
+      socketService.on('presence_camera:frame', handleRemoteFrame);
+
+      // Send initial request
+      socketService.emit('manager:request_presence_camera', { employeeId });
+
+      // Refresh every 8 seconds while card is displayed
+      const interval = setInterval(() => {
+        if (!cancelled) {
+          socketService.emit('manager:request_presence_camera', { employeeId });
+        }
+      }, 8000);
+
+      const timeout = setTimeout(() => {
+        if (!cancelled && !cameraActive && !errorMsg) {
+          setErrorMsg('Employee camera response timed out');
+        }
+      }, 10000);
+
+      return () => {
+        cancelled = true;
+        clearInterval(interval);
+        clearTimeout(timeout);
+        socketService.off('presence_camera:frame', handleRemoteFrame);
+      };
+    }
+  }, [isOwnCard, employeeId, employeeName]);
 
   return (
     <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
@@ -114,7 +186,13 @@ const CameraPreviewCard: React.FC<{ seconds: number }> = ({ seconds }) => {
         </div>
       </div>
       <div className="mt-4 rounded-xl overflow-hidden bg-slate-900 aspect-video relative flex items-center justify-center">
-        <canvas ref={canvasRef} className="w-full h-full object-cover" />
+        {isOwnCard ? (
+          <canvas ref={canvasRef} className="w-full h-full object-cover" />
+        ) : remoteFrame && cameraActive ? (
+          <img src={remoteFrame} alt={employeeName} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full bg-slate-950 flex items-center justify-center" />
+        )}
         {errorMsg && (
           <p className="absolute inset-0 flex items-center justify-center p-3 text-center text-xs text-rose-400 bg-slate-900/90 font-medium">
             {errorMsg}
@@ -123,12 +201,18 @@ const CameraPreviewCard: React.FC<{ seconds: number }> = ({ seconds }) => {
         {!cameraActive && !errorMsg && (
           <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400 text-xs gap-2">
             <Camera className="w-4 h-4 animate-spin text-indigo-400" />
-            <span>Activating camera…</span>
+            <span>{statusText}</span>
           </div>
         )}
       </div>
-      <p className="mt-2 text-[10px] text-slate-400 font-medium">Live - visible only to you, never recorded</p>
-      <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">{formatDuration(seconds)} confirmed today</p>
+      <p className="mt-2 text-[10px] text-slate-400 font-medium">
+        {isOwnCard
+          ? 'Live - visible only to you, never recorded'
+          : `Remote employee camera — refreshed on demand, never stored`}
+      </p>
+      <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">
+        {formatDuration(seconds)} confirmed today
+      </p>
     </div>
   );
 };
@@ -151,7 +235,7 @@ export const PresenceVerificationCard: React.FC = () => {
   const { user } = useEmployee();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('');
-  const { summary, loading } = useShiftSummary(selectedEmployeeId || null);
+  const { summary } = useShiftSummary(selectedEmployeeId || null);
 
   useEffect(() => {
     mongoTrackingApiService
@@ -171,6 +255,9 @@ export const PresenceVerificationCard: React.FC = () => {
   }, [user.email]);
 
   const selectedEmployee = employees.find((e) => e.id === selectedEmployeeId);
+  const isOwnCard = !selectedEmployeeId ||
+    (user.id && selectedEmployeeId === user.id) ||
+    (selectedEmployee?.email?.toLowerCase() === user.email?.toLowerCase());
 
   return (
     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-6 space-y-5">
@@ -221,7 +308,12 @@ export const PresenceVerificationCard: React.FC = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <CameraPreviewCard seconds={summary?.cameraActiveSeconds || 0} />
+          <CameraPreviewCard
+            seconds={summary?.cameraActiveSeconds || 0}
+            employeeId={selectedEmployeeId}
+            employeeName={selectedEmployee?.fullName || 'Employee'}
+            isOwnCard={!!isOwnCard}
+          />
           <StatCard
             label="Input-Confirmed Active"
             seconds={summary?.activeSeconds || 0}

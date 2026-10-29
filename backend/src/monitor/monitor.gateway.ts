@@ -295,4 +295,83 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
         : `user_${notification.userId}`;
     this.server.to(room).emit('notification:new', notification);
   }
+
+  /**
+   * Manager requests remote camera frame for presence verification of an employee
+   */
+  @SubscribeMessage('manager:request_presence_camera')
+  handleManagerRequestPresenceCamera(
+    @MessageBody() data: { employeeId: string; requestId?: string },
+    @ConnectedSocket() client: Socket,
+  ): void {
+    const { employeeId, requestId = Math.random().toString(36).substring(2, 9) } = data || {};
+    if (!employeeId) return;
+
+    // Role check: Only MANAGER or ADMIN is permitted to request employee camera view
+    const user = client.data?.user;
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'MANAGER')) {
+      this.logger.warn(`[MonitorGateway] Unauthorized presence camera request from socket ${client.id}`);
+      client.emit('presence_camera:frame', {
+        employeeId,
+        requestId,
+        status: 'unauthorized',
+        error: 'Unauthorized: Only Managers and Admins can view employee camera feeds',
+      });
+      return;
+    }
+
+    // Check if target employee has any connected socket in their personal room
+    const targetRoom = this.server?.sockets?.adapter?.rooms?.get(`user_${employeeId}`);
+    if (!targetRoom || targetRoom.size === 0) {
+      this.logger.log(`[MonitorGateway] Employee ${employeeId} is currently offline`);
+      client.emit('presence_camera:frame', {
+        employeeId,
+        requestId,
+        status: 'offline',
+        error: 'Employee offline',
+      });
+      return;
+    }
+
+    this.logger.log(`[MonitorGateway] Manager ${client.id} (${user.email}) requested camera frame for employee ${employeeId}`);
+    // Request frame directly from the employee's machine via their private room
+    this.server.to(`user_${employeeId}`).emit('employee:request_camera_frame', {
+      requestId,
+      managerSocketId: client.id,
+      requesterRole: user.role,
+      employeeId,
+    });
+  }
+
+  /**
+   * Employee responds with on-demand presence camera frame
+   */
+  @SubscribeMessage('employee:camera_frame_response')
+  handleEmployeeCameraFrameResponse(
+    @MessageBody() data: {
+      requestId: string;
+      managerSocketId: string;
+      employeeId: string;
+      status: string;
+      frameData?: string;
+      error?: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ): void {
+    if (!data?.managerSocketId) return;
+
+    this.logger.log(
+      `[MonitorGateway] Routing camera frame response for employee ${data.employeeId} to manager socket ${data.managerSocketId} (status: ${data.status})`,
+    );
+
+    // PRIVACY & SECURITY: Deliver ONLY to the requesting manager's socket.
+    // Never broadcast or persist.
+    this.server.to(data.managerSocketId).emit('presence_camera:frame', {
+      employeeId: data.employeeId,
+      requestId: data.requestId,
+      status: data.status,
+      frameData: data.frameData,
+      error: data.error,
+    });
+  }
 }
