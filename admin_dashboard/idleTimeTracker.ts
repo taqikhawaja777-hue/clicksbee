@@ -23,7 +23,7 @@ import fs from 'fs';
 
 export type ActiveAppLabel = 'Cisco Jabber' | 'Wildix' | 'Yeastar Linkus Lite' | 'Other';
 
-const IDLE_THRESHOLD_SECONDS = 300; // 5 minutes (configurable)
+const IDLE_THRESHOLD_SECONDS = 120; // 2 minutes
 const POLL_INTERVAL_MS = 20000; // 20s
 const BATCH_INTERVAL_MS = 90000; // 90s
 const API_BASE_URL_DEFAULT = BACKEND_URL;
@@ -390,17 +390,12 @@ class IdleTimeTracker {
     const win = await this.getActiveWinResult();
     let appLabel = classifyActiveApp(win);
 
-    // If focused app is not a dialer, check if a dialer is running in background/tray
-    const backgroundDialer = await this.getBackgroundRunningDialer();
-    
-    let isIdle = systemIdle;
-    if (systemIdle && (appLabel === 'Cisco Jabber' || appLabel === 'Wildix' || appLabel === 'Yeastar Linkus Lite' || backgroundDialer)) {
-      // User is on a headset/voice call via the dialer: exempt from idle
-      isIdle = false;
-      if (appLabel === 'Other' && backgroundDialer) {
-        appLabel = backgroundDialer;
-      }
-    }
+    // If the dialer is the FOCUSED window and the system is idle, treat as active —
+    // the employee is likely on a headset call watching the Jabber/Wildix/Yeastar UI.
+    // If the dialer is in the background/tray and the system is idle, it IS idle.
+    const dialerIsFocused =
+      appLabel === 'Cisco Jabber' || appLabel === 'Wildix' || appLabel === 'Yeastar Linkus Lite';
+    const isIdle = systemIdle && !dialerIsFocused;
 
     const pollSeconds = POLL_INTERVAL_MS / 1000;
     if (isIdle) {
@@ -408,11 +403,6 @@ class IdleTimeTracker {
     } else {
       this.activeSeconds += pollSeconds;
       this.appFocusSeconds[appLabel] = (this.appFocusSeconds[appLabel] || 0) + pollSeconds;
-      // If employee is actively working in another app while dialer runs in background,
-      // also ensure dialer receives focus credit
-      if (backgroundDialer && appLabel !== backgroundDialer) {
-        this.appFocusSeconds[backgroundDialer] = (this.appFocusSeconds[backgroundDialer] || 0) + pollSeconds;
-      }
     }
 
     this.lastActiveApp = isIdle ? null : appLabel;
