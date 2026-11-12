@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Delete,
   Param,
   Query,
@@ -10,6 +11,7 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
@@ -22,18 +24,22 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 export class ScreenshotsController {
   constructor(private readonly screenshotsService: ScreenshotsService) {}
 
-  @ApiOperation({ summary: 'Save live captured screenshot directly to MongoDB collection' })
+  @ApiOperation({
+    summary:
+      'Desktop agent 1-minute archive capture: writes storage/screenshots/<Employee Name>/<date>/<date_time>.jpg and records it. Idempotent on eventId.',
+  })
   @Post('capture')
   async captureScreenshot(
     @Body() dto: {
       userName: string;
-      userId?: string;
+      userId: string;
       userRole?: string;
       imageUrl: string;
       activeWindowName?: string;
       timestamp?: string;
       date?: string;
       isIdle?: boolean;
+      eventId?: string;
     },
   ) {
     if (!dto || !dto.imageUrl) {
@@ -99,6 +105,29 @@ export class ScreenshotsController {
       startDate,
       endDate,
     );
+  }
+
+  @ApiOperation({ summary: "Where employee apps send screenshots: the manager PC's LAN IP/port (org-wide)" })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('server-config')
+  async getServerConfig(@CurrentUser('organizationId') organizationId: string) {
+    return this.screenshotsService.getServerConfig(organizationId);
+  }
+
+  @ApiOperation({ summary: 'Set the org-wide screenshot destination (manager/admin only)' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Put('server-config')
+  async setServerConfig(
+    @CurrentUser('organizationId') organizationId: string,
+    @CurrentUser('role') role: string,
+    @Body() body: { ip: string | null; port?: number },
+  ) {
+    if (role !== 'ADMIN' && role !== 'MANAGER') {
+      throw new ForbiddenException('Only managers and admins can change where screenshots are stored');
+    }
+    return this.screenshotsService.setServerConfig(organizationId, body?.ip ?? null, body?.port);
   }
 
   @ApiOperation({ summary: 'Get screenshot by ID' })

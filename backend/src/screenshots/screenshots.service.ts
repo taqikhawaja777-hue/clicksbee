@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
@@ -9,6 +10,22 @@ import { getShiftDayString } from '../common/utils/shift-day.util';
 import { StreamableFile } from '@nestjs/common';
 import { AiVisionEvaluatorService } from '../services/aiVisionEvaluator';
 import * as fs from 'fs';
+import * as path from 'path';
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv',
+  '.txt': 'text/plain',
+};
 
 @Injectable()
 export class ScreenshotsService {
@@ -30,86 +47,99 @@ export class ScreenshotsService {
     timestamp?: string;
     date?: string;
     isIdle?: boolean;
+    eventId?: string;
   }) {
-    const defaultOrg = await this.prisma.organization.findFirst();
-    const orgId = defaultOrg ? defaultOrg.id : '66ba11111111111111111111';
-
-    let user = await this.prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: dto.userName.toLowerCase().replace(/\s+/g, '') + '@stitchmonitor.com' },
-          { firstName: { contains: dto.userName.split(' ')[0], mode: 'insensitive' } }
-        ]
-      }
+    if (!dto.userId) {
+      throw new BadRequestException('userId is required');
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: dto.userId },
+      select: { id: true, organizationId: true, firstName: true, lastName: true, role: true },
     });
-
     if (!user) {
-      user = await this.prisma.user.findFirst();
+      throw new NotFoundException('Employee not found');
+    }
+    if (dto.eventId) {
+      const existing = await this.prisma.screenshot.findUnique({ where: { eventId: dto.eventId } });
+      if (existing) return this.toFeedRecord(existing, user, dto);
     }
 
-    const userId = user ? user.id : '66ba22222222222222222222';
-    const fileName = `${dto.userName.replace(/\s+/g, '_')}_${Date.now()}.png`;
-
-    let fileUrl = dto.imageUrl;
-    let filePath = 'storage/screenshots/' + fileName;
-    let fileSize = Math.round(dto.imageUrl.length * 0.75);
-
-    // If Base64 Data URL, convert to binary PNG file on physical disk & create accessible HTTP URL
-    if (dto.imageUrl && dto.imageUrl.startsWith('data:image/')) {
-      try {
-        const base64Data = dto.imageUrl.replace(/^data:image\/\w+;base64,/, '');
-        const fileBuffer = Buffer.from(base64Data, 'base64');
-        fileSize = fileBuffer.length;
-
-        const uploadRes = await this.storage.upload(
-          fileBuffer,
-          orgId,
-          userId,
-          fileName,
-          'image/png',
-        );
-
-        filePath = uploadRes.filePath;
-        fileUrl = uploadRes.fileUrl;
-      } catch (err) {
-        console.warn('Failed to write base64 to physical file, storing fallback data URL:', err);
-      }
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/s.exec(dto.imageUrl || '');
+    if (!match) {
+      throw new BadRequestException('imageUrl must be a base64 image data URL');
     }
+    const mimeType = match[1];
+    const fileBuffer = Buffer.from(match[2], 'base64');
+    const capturedAt = dto.timestamp && !Number.isNaN(Date.parse(dto.timestamp)) ? new Date(dto.timestamp) : new Date();
+    const employeeName = `${user.firstName} ${user.lastName}`.trim();
+
+    const uploadRes = await this.storage.uploadScreenshot(fileBuffer, employeeName, capturedAt, mimeType);
 
     const record = await this.prisma.screenshot.create({
       data: {
-        organizationId: orgId,
-        userId: userId,
-        fileName: fileName,
-        filePath: filePath,
-        fileUrl: fileUrl,
+        organizationId: user.organizationId,
+        userId: user.id,
+        fileName: uploadRes.filePath.split('/').pop() || 'screenshot',
+        filePath: uploadRes.filePath,
+        fileUrl: uploadRes.fileUrl,
         activeWindowName: dto.activeWindowName || null,
-        fileSize: fileSize,
-        mimeType: 'image/png',
+        fileSize: uploadRes.fileSize,
+        mimeType,
+        capturedAt,
         isBlurred: false,
-        eventId: 'evt_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
+        eventId: dto.eventId || 'evt_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
       },
     });
 
-    // Trigger AI Vision Evaluation in background
-    this.aiVisionEvaluator.evaluateScreenshot(record.id).catch(err => {
-      console.warn(`Background AI vision evaluation error for ${record.id}:`, err);
-    });
+    // The 1-minute archive deliberately does NOT run the Gemini vision
+    // evaluation - Live Monitor has its own on-demand path for that.
+    return this.toFeedRecord(record, user, dto);
+  }
 
+  private toFeedRecord(
+    record: { id: string; userId: string; fileUrl: string; capturedAt: Date; activeWindowName: string | null },
+    user: { firstName: string; lastName: string; role: string },
+    dto: { userRole?: string; isIdle?: boolean },
+  ) {
     return {
       id: record.id,
       userId: record.userId,
-      userName: dto.userName,
-      userRole: dto.userRole || 'Software Engineer',
-      timestamp: dto.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      userName: `${user.firstName} ${user.lastName}`.trim(),
+      userRole: dto.userRole || user.role,
+      timestamp: record.capturedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Karachi' }),
       isoTimestamp: record.capturedAt.toISOString(),
-      date: dto.date || getShiftDayString(record.capturedAt),
+      date: getShiftDayString(record.capturedAt),
       imageUrl: record.fileUrl,
       isIdle: !!dto.isIdle,
-      activeWindowName: dto.activeWindowName || 'Active Shift Session (File Explorer / Desktop)',
+      activeWindowName: record.activeWindowName || 'Desktop',
       screenshotNumber: 1,
       totalTodayCount: 1,
     };
+  }
+
+  async getServerConfig(organizationId: string) {
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { screenshotServerIp: true, screenshotServerPort: true },
+    });
+    return { ip: org?.screenshotServerIp || null, port: org?.screenshotServerPort || 5000 };
+  }
+
+  async setServerConfig(organizationId: string, ip: string | null, port?: number) {
+    const cleanIp = ip?.trim() || null;
+    if (cleanIp && !/^(\d{1,3}\.){3}\d{1,3}$/.test(cleanIp) && !/^[a-zA-Z0-9.-]{1,253}$/.test(cleanIp)) {
+      throw new BadRequestException('ip must be an IPv4 address or host name');
+    }
+    const cleanPort = port === undefined ? 5000 : Number(port);
+    if (!Number.isInteger(cleanPort) || cleanPort < 1024 || cleanPort > 65535) {
+      throw new BadRequestException('port must be between 1024 and 65535');
+    }
+    const org = await this.prisma.organization.update({
+      where: { id: organizationId },
+      data: { screenshotServerIp: cleanIp, screenshotServerPort: cleanPort },
+      select: { screenshotServerIp: true, screenshotServerPort: true },
+    });
+    return { ip: org.screenshotServerIp, port: org.screenshotServerPort || 5000 };
   }
 
   /**
@@ -296,6 +326,13 @@ export class ScreenshotsService {
       throw new NotFoundException('Screenshot file not found on disk');
     }
     const stream = fs.createReadStream(absolutePath);
-    return new StreamableFile(stream);
+    // Without a real Content-Type the browser can't render a PDF inline and
+    // falls back to a bare download. Strip StorageService's timestamp prefix
+    // from the suggested filename.
+    const fileName = path.basename(absolutePath).replace(/^\d+_/, '').replace(/"/g, '');
+    return new StreamableFile(stream, {
+      type: MIME_BY_EXT[path.extname(absolutePath).toLowerCase()] || 'application/octet-stream',
+      disposition: `inline; filename="${fileName}"`,
+    });
   }
 }

@@ -105,6 +105,15 @@ function getKarachiMinutesOfDay(d: Date = new Date()): number {
   return karachi.getUTCHours() * 60 + karachi.getUTCMinutes();
 }
 
+export function isBeforeShiftEnd(d: Date = new Date()): boolean {
+  return getKarachiMinutesOfDay(d) < SHIFT_END_MINUTES_OF_DAY;
+}
+
+export function isScheduledBreakNow(d: Date = new Date()): boolean {
+  const minutes = getKarachiMinutesOfDay(d);
+  return SCHEDULED_BREAKS.some((period) => minutes >= period.start && minutes < period.end);
+}
+
 function isTrackableWorkTime(d: Date = new Date()): boolean {
   const minutes = getKarachiMinutesOfDay(d);
   return minutes >= SHIFT_START_MINUTES_OF_DAY

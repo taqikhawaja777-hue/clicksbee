@@ -24,6 +24,7 @@ const ICONS_BY_TYPE: Record<string, React.ComponentType<{ className?: string }>>
   TASK_COMPLETED: ClipboardList,
   TASK_OVERDUE: AlertTriangle,
   MANUAL_MESSAGE: MessageSquare,
+  TASK_REPLY: MessageSquare,
   ATTENDANCE_ALERT: ShieldAlert,
   SYSTEM_ALERT: ShieldAlert,
 };
@@ -40,6 +41,7 @@ const COLOR_BY_TYPE: Record<string, string> = {
   TASK_COMPLETED: 'text-emerald-500',
   TASK_ASSIGNED: 'text-indigo-500',
   MANUAL_MESSAGE: 'text-indigo-500',
+  TASK_REPLY: 'text-indigo-500',
 };
 
 const timeAgo = (iso: string): string => {

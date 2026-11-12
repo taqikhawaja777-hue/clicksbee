@@ -32,7 +32,11 @@ class SocketService {
    * Connect to Socket.IO server
    */
   connect(): Socket {
-    if (this.socket?.connected) {
+    // Also covers a socket still mid-handshake: every on()/emit() during
+    // startup used to open another connection, leaving orphans (with their
+    // handlers) connected for the life of the app. Socket.IO reconnects a
+    // dropped socket itself; only disconnect()/reauthenticate() null it.
+    if (this.socket) {
       return this.socket;
     }
 
@@ -63,6 +67,12 @@ class SocketService {
 
     this.socket.on('connect_error', (err) => {
       console.warn(`[SocketService] Connection error:`, err.message);
+    });
+
+    // reauthenticate() replaces the socket object; handlers registered via
+    // on() live on the old instance and would otherwise be lost silently.
+    this.eventListeners.forEach((callbacks, event) => {
+      callbacks.forEach((cb) => this.socket!.on(event, cb));
     });
 
     return this.socket;

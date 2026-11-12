@@ -155,6 +155,17 @@ export const AdminDashboard: React.FC = () => {
           // Store raw activity snapshots against the existing MongoDB user,
           // not the retired Supabase productivity-service employee record.
           await ipcRenderer.invoke('start-idle-time-tracking', { employeeId: user.id, apiBaseUrl: API_ORIGIN });
+          // Point this machine's screenshot uploads at the org's manager PC
+          // before the first capture fires (set-monitor-employee-context below).
+          try {
+            const res: any = await apiService.getScreenshotServerConfig();
+            const cfg = res?.data ?? res;
+            if (cfg?.ip) {
+              await ipcRenderer.invoke('set-local-settings', { adminPcIp: cfg.ip, adminPcPort: cfg.port || 5000 });
+            }
+          } catch (err) {
+            console.warn('[CaptureService] Could not load org screenshot destination, keeping local setting:', err);
+          }
           // Separate id space from the productivity_service employee above
           // (that one's a Supabase UUID) - this is the real MongoDB User id,
           // which is what captureService.ts's screenshot/vision-analysis

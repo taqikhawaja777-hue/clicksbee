@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Bell, Send, ShieldAlert, CheckCircle2, Clock, Coffee, Camera, ClipboardList, MessageSquare, AlertTriangle, Users, Paperclip, FileText, X } from 'lucide-react';
-import { apiService, API_ORIGIN } from './src/services/api.service';
+import { apiService } from './src/services/api.service';
 import { useEmployee } from './EmployeeContext';
+import { AttachmentPreviewModal, AttachmentChip, AttachmentRef, ACCEPTED_DOC_TYPES } from './AttachmentPreviewModal';
 
 interface NotificationItem {
   id: string;
@@ -33,6 +34,7 @@ const ICONS_BY_TYPE: Record<string, React.ComponentType<{ className?: string }>>
   TASK_COMPLETED: ClipboardList,
   TASK_OVERDUE: AlertTriangle,
   MANUAL_MESSAGE: MessageSquare,
+  TASK_REPLY: MessageSquare,
   ATTENDANCE_ALERT: ShieldAlert,
   SYSTEM_ALERT: ShieldAlert,
 };
@@ -49,6 +51,7 @@ const COLOR_BY_TYPE: Record<string, string> = {
   TASK_COMPLETED: 'text-emerald-500 bg-emerald-500/10',
   TASK_ASSIGNED: 'text-indigo-500 bg-indigo-500/10',
   MANUAL_MESSAGE: 'text-indigo-500 bg-indigo-500/10',
+  TASK_REPLY: 'text-indigo-500 bg-indigo-500/10',
 };
 
 // Mirrors backend NotificationsService.isManagementTier() exactly - this
@@ -114,6 +117,7 @@ export const NotificationsPageView: React.FC = () => {
   const [sendResult, setSendResult] = useState<'idle' | 'success' | 'error'>('idle');
   const [sendError, setSendError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null);
 
   const fetchNotifications = useCallback(() => {
     setLoading(true);
@@ -291,7 +295,7 @@ export const NotificationsPageView: React.FC = () => {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,application/pdf"
+            accept={ACCEPTED_DOC_TYPES}
             onChange={(e) => setAttachedFile(e.target.files?.[0] || null)}
             className="hidden"
             id="notification-attachment-input"
@@ -301,7 +305,7 @@ export const NotificationsPageView: React.FC = () => {
             className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-semibold cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
           >
             <Paperclip className="w-3.5 h-3.5" />
-            <span>Attach PDF report</span>
+            <span>Attach document</span>
           </label>
           {attachedFile && (
             <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-semibold">
@@ -350,16 +354,12 @@ export const NotificationsPageView: React.FC = () => {
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{item.message}</p>
                   {item.attachmentUrl && (
-                    <a
-                      href={`${API_ORIGIN}${item.attachmentUrl}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="inline-flex items-center space-x-1.5 mt-2 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg text-[11px] font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                      <span>{item.attachmentName || 'Attachment'}</span>
-                    </a>
+                    <div className="mt-2">
+                      <AttachmentChip
+                        attachment={{ url: item.attachmentUrl, name: item.attachmentName }}
+                        onOpen={setPreviewAttachment}
+                      />
+                    </div>
                   )}
                 </div>
               </div>
@@ -367,6 +367,12 @@ export const NotificationsPageView: React.FC = () => {
           })
         )}
       </div>
+
+      <AttachmentPreviewModal
+        attachment={previewAttachment}
+        onClose={() => setPreviewAttachment(null)}
+        allowDownload={isManager}
+      />
     </div>
   );
 };

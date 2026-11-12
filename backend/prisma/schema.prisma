@@ -92,6 +92,7 @@ enum NotificationType {
   COMPLIANCE_VIOLATION
   TASK_OVERDUE
   MANUAL_MESSAGE
+  TASK_REPLY
 }
 
 // ADMIN: visible to every ADMIN/MANAGER in the organization (a shared
@@ -128,6 +129,11 @@ model Organization {
   workingHoursStart String  @default("09:00")
   workingHoursEnd   String  @default("17:00")
   weekendDays      String[] @default(["SATURDAY", "SUNDAY"])
+  // LAN address of the manager PC whose WorkTrackPro app receives and stores
+  // employee screenshots (localScreenshotServer.ts). Every employee app
+  // reads this at login, so it is configured once, not per machine.
+  screenshotServerIp   String?
+  screenshotServerPort Int?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -197,6 +203,7 @@ model User {
   idleTimeLogs       IdleTimeLog[]
   assignedTasks       Task[]         @relation("AssignedTasks")
   createdTasks        Task[]         @relation("CreatedTasks")
+  taskAttachmentUploads TaskAttachment[] @relation("TaskAttachmentUploads")
   managedProjects     Project[]      @relation("ManagedProjects")
   createdProjects     Project[]      @relation("CreatedProjects")
   devices             Device[]
@@ -593,6 +600,12 @@ model Task {
   // this task, so it fires exactly once per task rather than every day
   // it remains overdue.
   overdueNotified      Boolean      @default(false)
+  // Document the assigner attached when creating the task (brief, spec,
+  // report) - a URL into StorageService via POST /tasks/attachment.
+  attachmentUrl        String?
+  attachmentName       String?
+  // Assigned when the task is completed - a completed task IS the ticket.
+  ticketNumber         String?
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
@@ -601,9 +614,30 @@ model Task {
   assignee     User?        @relation("AssignedTasks", fields: [assignedTo], references: [id])
   assigner     User?        @relation("CreatedTasks", fields: [assignedBy], references: [id])
   screenshots  Screenshot[]
+  attachments  TaskAttachment[]
 
   @@index([organizationId, assignedTo, status])
   @@index([organizationId, projectId])
+  @@index([organizationId, completedAt])
+}
+
+// One reply on a task after assignment - the assignee sending work back,
+// or the assigner following up. Either a note, a file, or both.
+model TaskAttachment {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  taskId         String   @db.ObjectId
+  uploadedBy     String   @db.ObjectId
+  fileName       String?
+  fileUrl        String?
+  note           String?
+  createdAt      DateTime @default(now())
+
+  task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploader User @relation("TaskAttachmentUploads", fields: [uploadedBy], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@index([organizationId])
 }
 
 model AuditLog {

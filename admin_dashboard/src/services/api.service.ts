@@ -13,6 +13,58 @@ const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://loca
 // direct employees-list fetches, etc.).
 export const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
 
+export interface TeamProductivityMember {
+  userId: string;
+  name: string;
+  email: string;
+  role: string;
+  designation?: string | null;
+  tasksCreated: number;
+  teamCompleted: number;
+  ownCompleted: number;
+  completedOnTime: number;
+  completedWithDueDate: number;
+  overdueOpen: number;
+  openTasks: number;
+  inProgress: { taskId: string; title: string; assigneeName: string; startedAt: string | null }[];
+  onTimeRate: number;
+  throughputScore: number;
+  accuracyScore: number;
+  overdueScore: number;
+  score: number;
+  hasActivity: boolean;
+}
+
+export interface TeamProductivityResponse {
+  from: string;
+  to: string;
+  periodDays: number;
+  config: {
+    weights: { onTime: number; throughput: number; accuracy: number; overdue: number };
+    targetMinutesPerDay: number;
+    overduePenaltyPerTask: number;
+  };
+  summary: { avgScore: number; activeMemberCount: number; memberCount: number; ticketsGeneratedToday: number };
+  members: TeamProductivityMember[];
+}
+
+export interface TaskTicket {
+  id: string;
+  ticketNumber: string | null;
+  taskId: string;
+  title: string;
+  priority: string;
+  assigneeName: string | null;
+  assignerName: string | null;
+  estimatedMinutes: number;
+  actualMinutes: number;
+  estimateAccuracy: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  dueDate: string | null;
+  onTime: boolean | null;
+}
+
 const ACCESS_TOKEN_KEY = 'auth_token';
 const REFRESH_TOKEN_KEY = 'auth_refresh_token';
 const EXPIRES_AT_KEY = 'auth_token_expires_at';
@@ -301,14 +353,26 @@ class ApiService {
     return this.get('/screenshots/feed');
   }
 
-  /** Create a task assigned to an employee (by email — resolved server-side) */
+  /** Org-wide screenshot destination: the manager PC whose app stores employee screenshots */
+  async getScreenshotServerConfig() {
+    return this.get<{ data: { ip: string | null; port: number } }>('/screenshots/server-config');
+  }
+
+  async setScreenshotServerConfig(ip: string | null, port: number) {
+    return this.put<{ data: { ip: string | null; port: number } }>('/screenshots/server-config', { ip, port });
+  }
+
+  /** Create a task assigned to an employee (by email — resolved server-side) or by user id */
   async createTask(dto: {
     title: string;
     description?: string;
-    assignedToEmail: string;
+    assignedToEmail?: string;
+    assignedTo?: string;
     priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
     dueDate?: string;
     estimatedMinutes?: number;
+    attachmentUrl?: string;
+    attachmentName?: string;
   }) {
     return this.post('/tasks', dto);
   }
@@ -319,9 +383,41 @@ class ApiService {
     return this.get(`/tasks${status ? `?status=${status}` : ''}`);
   }
 
-  /** Mark a task completed */
+  /** Start working on a task (stamps startedAt, which actualMinutes is measured from) */
+  async startTask(taskId: string) {
+    return this.post(`/tasks/${taskId}/start`, {});
+  }
+
+  /** Mark a task completed - the response is the ticket (ticketNumber, actualMinutes, onTime) */
   async completeTask(taskId: string) {
     return this.post(`/tasks/${taskId}/complete`, {});
+  }
+
+  /** Task-based productivity for every non-employee team member over a shift-day range (manager/admin only) */
+  async getTaskProductivity(from: string, to: string) {
+    return this.get<{ data: TeamProductivityResponse }>(`/tasks/productivity?from=${from}&to=${to}`);
+  }
+
+  /** Tickets (completed tasks), optionally for one member (assigned by or to them) */
+  async getTaskTickets(params?: { userId?: string; page?: number; pageSize?: number }) {
+    const query = new URLSearchParams();
+    if (params?.userId) query.set('userId', params.userId);
+    if (params?.page) query.set('page', String(params.page));
+    if (params?.pageSize) query.set('pageSize', String(params.pageSize));
+    const qs = query.toString();
+    return this.get<{ data: TaskTicket[]; pagination: any }>(`/tasks/tickets${qs ? `?${qs}` : ''}`);
+  }
+
+  /** Reply on a task with a note and/or a document (upload it first via
+   * uploadTaskAttachment). The backend only lets the assignee or a
+   * manager/admin reply, and notifies the other side. */
+  async replyToTask(taskId: string, body: { note?: string; attachmentUrl?: string; attachmentName?: string }) {
+    return this.post(`/tasks/${taskId}/reply`, body);
+  }
+
+  /** Upload a document to attach to a task (brief on creation, or a reply). */
+  async uploadTaskAttachment(file: File): Promise<{ url: string; fileName: string }> {
+    return this.uploadFile('/tasks/attachment', file);
   }
 
   /** Notifications - the backend scopes these to the caller's own role:
@@ -391,12 +487,16 @@ class ApiService {
    * multipart, so it bypasses the generic JSON request() helper. Call
    * this first, then pass the returned url/fileName into sendNotification. */
   async uploadNotificationAttachment(file: File): Promise<{ url: string; fileName: string }> {
+    return this.uploadFile('/notifications/attachment', file);
+  }
+
+  private async uploadFile(path: string, file: File): Promise<{ url: string; fileName: string }> {
     const doUpload = (): Promise<Response> => {
       const formData = new FormData();
       formData.append('file', file);
       const headers: Record<string, string> = {};
       if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-      return fetch(`${this.baseUrl}/notifications/attachment`, {
+      return fetch(`${this.baseUrl}${path}`, {
         method: 'POST',
         headers,
         body: formData,
@@ -414,7 +514,10 @@ class ApiService {
       if (response.status === 401) this.handleSessionExpired();
       throw new Error(`Attachment upload failed: HTTP ${response.status}`);
     }
-    return response.json();
+    // TransformInterceptor wraps every JSON response as {success, data}; the
+    // caller needs the inner {url, fileName}.
+    const json = await response.json();
+    return json?.data ?? json;
   }
 }
 

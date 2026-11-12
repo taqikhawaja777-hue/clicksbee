@@ -8,12 +8,18 @@ import {
   Query,
   Body,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
   HttpCode,
   HttpStatus,
+  BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
 import { TasksService } from './tasks.service';
-import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto';
+import { CreateTaskDto, TaskReplyDto, UpdateTaskDto } from './dto/task.dto';
+import { StorageService } from '../storage/storage.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { TaskStatus } from '@prisma/client';
@@ -23,7 +29,10 @@ import { TaskStatus } from '@prisma/client';
 @UseGuards(JwtAuthGuard)
 @Controller('tasks')
 export class TasksController {
-  constructor(private readonly tasksService: TasksService) {}
+  constructor(
+    private readonly tasksService: TasksService,
+    private readonly storageService: StorageService,
+  ) {}
 
   @ApiOperation({ summary: 'Create task' })
   @Post()
@@ -33,6 +42,67 @@ export class TasksController {
     @Body() dto: CreateTaskDto,
   ) {
     return this.tasksService.createTask(userId, organizationId, dto);
+  }
+
+  @ApiOperation({ summary: 'Upload a document to attach to a task - the brief on creation, or a reply' })
+  @ApiConsumes('multipart/form-data')
+  @Post('attachment')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAttachment(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('organizationId') organizationId: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+    const { fileUrl } = await this.storageService.upload(
+      file.buffer,
+      organizationId,
+      userId,
+      file.originalname,
+      file.mimetype || 'application/octet-stream',
+    );
+    return { url: fileUrl, fileName: file.originalname };
+  }
+
+  @ApiOperation({ summary: 'Reply on a task with a note and/or document - the assignee sends work back, the assigner follows up' })
+  @Post(':id/reply')
+  async replyToTask(
+    @Param('id') id: string,
+    @CurrentUser('id') reqUserId: string,
+    @CurrentUser('organizationId') organizationId: string,
+    @CurrentUser('role') role: string,
+    @Body() dto: TaskReplyDto,
+  ) {
+    return this.tasksService.addReply(id, organizationId, reqUserId, role, dto);
+  }
+
+  @ApiOperation({ summary: 'Task-based productivity for every non-employee team member (manager/HR/SM/team lead/CSR) over a shift-day range' })
+  @Get('productivity')
+  async getTeamProductivity(
+    @CurrentUser('organizationId') organizationId: string,
+    @CurrentUser('role') role: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    if (role === 'EMPLOYEE') {
+      throw new ForbiddenException('Team productivity is available to managers and admins only');
+    }
+    return this.tasksService.getTeamProductivity(organizationId, from, to);
+  }
+
+  @ApiOperation({ summary: 'Tickets = completed tasks; optionally for one member (assigned by or to them)' })
+  @Get('tickets')
+  async getTickets(
+    @CurrentUser('id') reqUserId: string,
+    @CurrentUser('organizationId') organizationId: string,
+    @CurrentUser('role') role: string,
+    @Query('userId') userId?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.tasksService.getTickets(organizationId, reqUserId, role, userId, Number(page) || 1, Number(pageSize) || 50);
   }
 
   @ApiOperation({ summary: 'Get tasks' })

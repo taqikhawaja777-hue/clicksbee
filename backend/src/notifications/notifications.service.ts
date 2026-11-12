@@ -47,6 +47,8 @@ export class NotificationsService {
     message: string;
     recipientUserId?: string | null;
     metadata?: any;
+    attachmentUrl?: string | null;
+    attachmentName?: string | null;
   }) {
     const notification = await this.prisma.notification.create({
       data: {
@@ -58,6 +60,8 @@ export class NotificationsService {
         title: params.title,
         message: params.message,
         metadata: params.metadata || {},
+        attachmentUrl: params.attachmentUrl || undefined,
+        attachmentName: params.attachmentName || undefined,
       },
     });
     this.monitorGateway.emitNotification(notification as any);

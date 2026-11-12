@@ -2,7 +2,11 @@ import { app, desktopCapturer, powerMonitor, ipcMain, BrowserWindow } from 'elec
 import fs from 'fs';
 import path from 'path';
 import { getLocalSettings } from './localSettings';
-import { BACKEND_URL, PRODUCTIVITY_SERVICE_URL } from './serverConfig';
+import { BACKEND_URL } from './serverConfig';
+import { isBeforeShiftEnd, isScheduledBreakNow } from './idleTimeTracker';
+
+const ARCHIVE_CAPTURE_INTERVAL_MS = 60 * 1000;
+const ARCHIVE_JPEG_QUALITY = 0.75;
 
 export interface ScreenshotRecord {
   id: string;
@@ -67,25 +71,48 @@ function saveOfflineQueue(queue: ScreenshotRecord[]): void {
  */
 let currentEmployeeContext: { id: string; name: string; role: string } | null = null;
 
-/**
- * Same break-status check idleTimeTracker.ts already uses to freeze its
- * whole-day active/idle accumulators - screenshot capture (both loops
- * below) previously ran straight through breaks (scheduled or manual)
- * with no check at all, capturing/analyzing desktop activity during time
- * the employee is explicitly not supposed to be monitored. Fails open on
- * a transient productivity_service blip, matching every other
- * degrade-gracefully check in this file/idleTimeTracker.ts.
- */
-async function isEmployeeOnBreak(employeeId: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${PRODUCTIVITY_SERVICE_URL}/api/shift/break-status/${employeeId}`);
-    if (!response.ok) return false;
-    const data = await response.json();
-    return !!data.onBreak;
-  } catch (err) {
-    console.warn('[CaptureService] Failed to check break status, assuming not on break:', err);
-    return false;
+/** Scheduled breaks are fixed windows (see idleTimeTracker.ts); no network call needed. */
+async function isEmployeeOnBreak(_employeeId: string): Promise<boolean> {
+  return isScheduledBreakNow();
+}
+
+function karachiTimestampLabel(d: Date): string {
+  const k = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${k.getUTCFullYear()}-${pad(k.getUTCMonth() + 1)}-${pad(k.getUTCDate())} ${pad(k.getUTCHours())}:${pad(k.getUTCMinutes())}:${pad(k.getUTCSeconds())}`;
+}
+
+// Hidden window used only as a canvas to burn the name + date/time into the
+// frame; the main process has no 2D drawing API of its own.
+let stampWindow: BrowserWindow | null = null;
+
+async function stampImage(pngDataUrl: string, label: string): Promise<string> {
+  if (!stampWindow || stampWindow.isDestroyed()) {
+    stampWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true },
+    });
+    await stampWindow.loadURL('data:text/html,<canvas id="c"></canvas>');
   }
+  return stampWindow.webContents.executeJavaScript(`(async () => {
+    const img = new Image();
+    img.src = ${JSON.stringify(pngDataUrl)};
+    await img.decode();
+    const c = document.getElementById('c');
+    c.width = img.width; c.height = img.height;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const label = ${JSON.stringify(label)};
+    ctx.font = 'bold 26px Arial, sans-serif';
+    const padX = 18, h = 46, w = ctx.measureText(label).width + padX * 2;
+    const x = c.width - w - 24, y = c.height - h - 24;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + padX, y + h / 2);
+    return c.toDataURL('image/jpeg', ${ARCHIVE_JPEG_QUALITY});
+  })()`);
 }
 
 /**
@@ -111,24 +138,19 @@ export async function captureDesktopScreen(
   userName = resolvedUserName;
   userRole = resolvedUserRole;
   try {
-    // STEP 1: Check System Activity using Electron powerMonitor
+    // Idle employees are still captured (the frame is the evidence); the
+    // flag just travels with the record.
     const idleSeconds = powerMonitor.getSystemIdleTime();
-    const isIdle = idleSeconds > 60;
-
+    const isIdle = idleSeconds >= 120;
     if (isIdle) {
-      console.log(`[CaptureService] Employee ${userName} is IDLE (${idleSeconds}s > 60s). Skipping silent capture & logging idle event.`);
-      
-      // Log Idle Event to Renderer Windows
       BrowserWindow.getAllWindows().forEach((win) => {
         if (!win.isDestroyed()) {
           win.webContents.send('idle-event-logged', { userId, userName, idleSeconds, timestamp: new Date().toISOString() });
         }
       });
-
-      return null;
     }
 
-    // STEP 2: SILENT DESKTOP CAPTURE via Electron desktopCapturer (No Prompts/Alerts)
+    // SILENT DESKTOP CAPTURE via Electron desktopCapturer (No Prompts/Alerts)
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: 1920, height: 1080 },
@@ -140,15 +162,21 @@ export async function captureDesktopScreen(
     }
 
     const primarySource = sources[0];
-    const imageUrl = primarySource.thumbnail.toDataURL(); // Base64 PNG buffer
     const now = new Date();
-    const formattedTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const formattedDate = now.toISOString().split('T')[0];
+    const label = `${userName}  •  ${karachiTimestampLabel(now)}`;
+    let imageUrl = primarySource.thumbnail.toDataURL();
+    try {
+      imageUrl = await stampImage(imageUrl, label);
+    } catch (err) {
+      console.warn('[CaptureService] Could not stamp timestamp onto frame, sending unstamped PNG:', err);
+    }
+    const formattedTime = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Karachi' });
+    const formattedDate = karachiTimestampLabel(now).slice(0, 10);
 
     const todayUserCount = screenshotRecordsStore.filter(s => s.userId === userId && s.date === formattedDate).length + 1;
 
     const newRecord: ScreenshotRecord = {
-      id: `shot-${Date.now()}`,
+      id: `shot-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
       userId,
       userName,
       userRole,
@@ -156,7 +184,7 @@ export async function captureDesktopScreen(
       isoTimestamp: now.toISOString(),
       date: formattedDate,
       imageUrl,
-      isIdle: false,
+      isIdle,
       activeWindowName: primarySource.name || 'Active Desktop Application (This PC)',
       screenshotNumber: todayUserCount,
       totalTodayCount: todayUserCount,
@@ -180,24 +208,20 @@ export async function captureDesktopScreen(
   }
 }
 
-function buildUploadUrl(): string | null {
-  const settings = getLocalSettings();
-  if (!settings.adminPcIp) return null; // not configured yet - see ManagerSettingsView's "Admin PC IP" field
-  return `http://${settings.adminPcIp}:${settings.adminPcPort || 5000}/upload`;
-}
-
+/**
+ * POSTs the frame over the LAN to the manager PC's WorkTrackPro app
+ * (localScreenshotServer.ts), which saves it as
+ * <storage folder>/<Employee Name>/<date>/<date_time>.jpg. The address comes
+ * from the org-wide setting applied at login (dashboard.tsx), or a manual
+ * "Admin PC IP" override in Settings.
+ */
 async function postScreenshotToAdminPc(record: ScreenshotRecord): Promise<boolean> {
-  const url = buildUploadUrl();
-  if (!url) {
-    // No "Admin PC IP" configured yet - treat exactly like unreachable
-    // (throw, so the caller queues it for retry) rather than returning
-    // false, which the caller's try/catch would otherwise silently read
-    // as success and mark syncStatus 'ONLINE' without ever having sent
-    // anything anywhere.
-    throw new Error('Admin PC IP is not configured (see Settings)');
+  const settings = getLocalSettings();
+  if (!settings.adminPcIp) {
+    // Throw so the frame is queued for retry rather than silently dropped.
+    throw new Error('Screenshot destination is not configured (Manager Settings -> Local Screenshot Server)');
   }
-
-  const response = await fetch(url, {
+  const response = await fetch(`http://${settings.adminPcIp}:${settings.adminPcPort || 5000}/upload`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -218,24 +242,18 @@ async function postScreenshotToAdminPc(record: ScreenshotRecord): Promise<boolea
 }
 
 /**
- * STEP 3: TRANSMISSION & STORAGE LOGIC - POSTs directly to the admin PC's
- * local screenshot server over the LAN (see localScreenshotServer.ts on
- * the receiving end), replacing the old MongoDB Atlas upload. Failed
- * uploads (admin PC offline/unreachable, or "Admin PC IP" not configured
- * yet) are queued to disk and retried periodically by
- * retryOfflineQueuePeriodically() below, not just opportunistically on the
- * next successful capture like before - a screenshot captured on a day the
- * admin PC never comes back online must not just sit forever waiting for
- * a capture that also happens to succeed.
+ * Failed uploads (manager PC off/unreachable, or destination not configured)
+ * are queued to disk and retried by retryOfflineQueuePeriodically() - a
+ * screenshot captured while offline must not be lost if the app restarts.
  */
 async function transmitAndStoreScreenshot(record: ScreenshotRecord): Promise<void> {
   try {
     await postScreenshotToAdminPc(record);
     record.syncStatus = 'ONLINE';
-    console.log(`[CaptureService] Transmission SUCCESS: sent to admin PC.`);
+    console.log(`[CaptureService] Archived screenshot for ${record.userName} at ${record.date} ${record.timestamp}.`);
     void flushOfflineQueue(); // fast path - the network is evidently up again
   } catch (err) {
-    console.warn('[CaptureService] Admin PC offline / unreachable / not configured. Queuing screenshot for retry...', err);
+    console.warn('[CaptureService] Manager PC unreachable or not configured. Queuing screenshot for retry...', err);
     record.syncStatus = 'QUEUED_OFFLINE';
     const queue = loadOfflineQueue();
     queue.push(record);
@@ -258,7 +276,7 @@ async function flushOfflineQueue(): Promise<void> {
   const queue = loadOfflineQueue();
   if (queue.length === 0) return;
 
-  console.log(`[CaptureService] Flushing ${queue.length} offline-queued screenshot(s) to the admin PC...`);
+  console.log(`[CaptureService] Flushing ${queue.length} offline-queued screenshot(s) to the manager PC...`);
   const stillQueued: ScreenshotRecord[] = [];
 
   for (const record of queue) {
@@ -282,25 +300,23 @@ function retryOfflineQueuePeriodically(): void {
 }
 
 /**
- * STEP 1: AUTOMATIC TIMED TRIGGER (Every 5 Minutes)
+ * ARCHIVE LOOP: one screenshot a minute from employee login until the
+ * 19:00 Asia/Karachi shift end, skipping scheduled breaks. A no-op tick
+ * until a real employee context is set via set-monitor-employee-context.
  */
-export function startAutomated5MinScreenCaptureLoop(intervalMinutes: number = 5): void {
+async function archiveCaptureTick(): Promise<void> {
+  if (!currentEmployeeContext) return;
+  if (!isBeforeShiftEnd()) return; // shift over - resumes automatically on the next login/day
+  if (await isEmployeeOnBreak(currentEmployeeContext.id)) return;
+  await captureDesktopScreen();
+}
+
+export function startAutomatedScreenCaptureLoop(intervalMs: number = ARCHIVE_CAPTURE_INTERVAL_MS): void {
   if (automatedCaptureTimer) {
     clearInterval(automatedCaptureTimer);
   }
-
-  const ms = intervalMinutes * 60 * 1000;
-  console.log(`[CaptureService] Starting 5-minute silent automated desktop screen capture loop (${ms}ms)...`);
-
-  automatedCaptureTimer = setInterval(async () => {
-    if (!currentEmployeeContext) return; // nobody logged in yet - nothing to attribute a capture to
-    if (await isEmployeeOnBreak(currentEmployeeContext.id)) {
-      console.log('[CaptureService] On break, skipping automated capture tick.');
-      return;
-    }
-    console.log(`[CaptureService] 5-minute automated capture loop executing for ${currentEmployeeContext.name}...`);
-    await captureDesktopScreen();
-  }, ms);
+  console.log(`[CaptureService] Starting ${Math.round(intervalMs / 1000)}s silent desktop screen capture loop...`);
+  automatedCaptureTimer = setInterval(() => void archiveCaptureTick(), intervalMs);
 }
 
 /**
@@ -378,7 +394,10 @@ export function registerCaptureIpcHandlers(): void {
   // MongoDB user id/name/role
   ipcMain.handle('set-monitor-employee-context', async (_event, employeeId: string, employeeName: string, employeeRole?: string) => {
     if (!employeeId || !employeeName) return { success: false };
+    const isNewLogin = currentEmployeeContext?.id !== employeeId;
     currentEmployeeContext = { id: employeeId, name: employeeName, role: employeeRole || 'Employee' };
+    // First archive frame right at login; the loop takes over every minute after.
+    if (isNewLogin) void archiveCaptureTick();
     // NOTE: Do NOT automatically start live vision monitoring here.
     // Live vision monitoring is on-demand: it triggers ONLY when a manager selects
     // this specific employee on the Live Monitoring page.
@@ -428,11 +447,9 @@ export function registerCaptureIpcHandlers(): void {
     return results;
   });
 
-  // Start 5-minute automated background loop (a no-op each tick until a
-  // real employee context is set via set-monitor-employee-context)
-  startAutomated5MinScreenCaptureLoop(5);
+  startAutomatedScreenCaptureLoop();
 
-  // Retry any screenshots queued while the admin PC was unreachable, both
+  // Retry any screenshots queued while the backend was unreachable, both
   // right now (in case some were already queued from a previous run) and
   // on a recurring timer from then on.
   void flushOfflineQueue();

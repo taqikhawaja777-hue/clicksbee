@@ -30,6 +30,16 @@ function sanitizeForPath(name: string): string {
   return (name || 'unknown-employee').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || 'unknown-employee';
 }
 
+/** Asia/Karachi (UTC+5, no DST) date and HH-mm-ss for folder/file names. */
+function karachiDayAndTime(d: Date): { day: string; time: string } {
+  const k = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return {
+    day: `${k.getUTCFullYear()}-${pad(k.getUTCMonth() + 1)}-${pad(k.getUTCDate())}`,
+    time: `${pad(k.getUTCHours())}-${pad(k.getUTCMinutes())}-${pad(k.getUTCSeconds())}`,
+  };
+}
+
 function readJsonBody(req: IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -81,18 +91,23 @@ async function handleUpload(req: IncomingMessage, res: ServerResponse): Promise<
 
   const commaIndex = String(image).indexOf(',');
   const rawBase64 = String(image).startsWith('data:') && commaIndex !== -1 ? image.slice(commaIndex + 1) : image;
+  const ext = /^data:image\/jpe?g/i.test(String(image)) ? 'jpg' : 'png';
 
-  const capturedAt = timestamp ? new Date(timestamp) : new Date();
-  const dateFolder = date || capturedAt.toISOString().split('T')[0];
+  const parsed = timestamp ? new Date(timestamp) : new Date();
+  const capturedAt = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  const { day, time } = karachiDayAndTime(capturedAt);
+  const dateFolder = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ? date : day;
   const settings = getLocalSettings();
   const employeeFolder = sanitizeForPath(employeeName);
   const targetDir = path.join(settings.screenshotStoragePath, employeeFolder, dateFolder);
 
   try {
     fs.mkdirSync(targetDir, { recursive: true });
-    const hhmmss = capturedAt.toTimeString().slice(0, 8).replace(/:/g, '-');
-    const baseName = `${hhmmss}_${Math.random().toString(36).slice(2, 8)}`;
-    const filePath = path.join(targetDir, `${baseName}.png`);
+    let baseName = `${day}_${time}`;
+    for (let n = 2; fs.existsSync(path.join(targetDir, `${baseName}.${ext}`)); n++) {
+      baseName = `${day}_${time}_${n}`;
+    }
+    const filePath = path.join(targetDir, `${baseName}.${ext}`);
     fs.writeFileSync(filePath, Buffer.from(rawBase64, 'base64'));
 
     // Sidecar metadata (same basename, .json) - the folder/filename alone
@@ -227,13 +242,13 @@ function walkScreenshotTree(root: string): LocalScreenshotEntry[] {
       const dateDir = path.join(employeeDir, date);
       let files: string[];
       try {
-        files = fs.readdirSync(dateDir).filter((f) => f.toLowerCase().endsWith('.png'));
+        files = fs.readdirSync(dateDir).filter((f) => /\.(png|jpe?g)$/i.test(f));
       } catch {
         continue;
       }
       for (const fileName of files) {
         const filePath = path.join(dateDir, fileName);
-        const metaPath = filePath.replace(/\.png$/i, '.json');
+        const metaPath = filePath.replace(/\.(png|jpe?g)$/i, '.json');
 
         let capturedAt: string;
         try {

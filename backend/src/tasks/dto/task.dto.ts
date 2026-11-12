@@ -58,6 +58,33 @@ export class CreateTaskDto {
   @ApiPropertyOptional()
   @IsOptional()
   dueDate?: string;
+
+  @ApiPropertyOptional({ description: 'URL returned by POST /tasks/attachment' })
+  @IsString()
+  @IsOptional()
+  attachmentUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  attachmentName?: string;
+}
+
+export class TaskReplyDto {
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  note?: string;
+
+  @ApiPropertyOptional({ description: 'URL returned by POST /tasks/attachment' })
+  @IsString()
+  @IsOptional()
+  attachmentUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  attachmentName?: string;
 }
 
 export class UpdateTaskDto {

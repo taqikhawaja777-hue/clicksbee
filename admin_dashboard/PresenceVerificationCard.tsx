@@ -119,8 +119,11 @@ const CameraPreviewCard: React.FC<{
       // Remote employee: MANAGER NEVER CALLS getUserMedia()!
       setStatusText(`Connecting to ${employeeName}'s camera…`);
 
+      let gotResponse = false;
       const handleRemoteFrame = (data: any) => {
         if (cancelled || data?.employeeId !== employeeId) return;
+        gotResponse = true;
+        clearTimeout(timeout);
 
         if (data.status === 'active' && data.frameData) {
           setRemoteFrame(data.frameData);
@@ -162,7 +165,7 @@ const CameraPreviewCard: React.FC<{
       }, 8000);
 
       const timeout = setTimeout(() => {
-        if (!cancelled && !cameraActive && !errorMsg) {
+        if (!cancelled && !gotResponse) {
           setErrorMsg('Employee camera response timed out');
         }
       }, 10000);

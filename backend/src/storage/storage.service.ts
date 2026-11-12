@@ -73,6 +73,43 @@ export class StorageService implements IStorageService {
     };
   }
 
+  /**
+   * Archive screenshot: screenshots/<Employee Name>/<YYYY-MM-DD>/<YYYY-MM-DD_HH-mm-ss>.<ext>
+   * Folder and file names use Asia/Karachi wall-clock time.
+   */
+  async uploadScreenshot(
+    fileBuffer: Buffer,
+    employeeName: string,
+    capturedAt: Date,
+    mimeType: string,
+  ): Promise<{ filePath: string; fileUrl: string; fileSize: number }> {
+    const safeName =
+      employeeName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, ' ').trim() || 'unknown-employee';
+    const karachi = new Date(capturedAt.getTime() + 5 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const day = `${karachi.getUTCFullYear()}-${pad(karachi.getUTCMonth() + 1)}-${pad(karachi.getUTCDate())}`;
+    const time = `${pad(karachi.getUTCHours())}-${pad(karachi.getUTCMinutes())}-${pad(karachi.getUTCSeconds())}`;
+    const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+
+    const relativeDir = path.join('screenshots', safeName, day);
+    const absoluteDir = path.join(this.basePath, relativeDir);
+    if (!absoluteDir.startsWith(this.basePath)) {
+      throw new Error('Invalid file path: Directory traversal prohibited');
+    }
+    fs.mkdirSync(absoluteDir, { recursive: true });
+
+    const fileName = `${day}_${time}.${ext}`;
+    const absolutePath = path.join(absoluteDir, fileName);
+    const relativePath = path.join(relativeDir, fileName).replace(/\\/g, '/');
+    await fs.promises.writeFile(absolutePath, fileBuffer);
+
+    return {
+      filePath: relativePath,
+      fileUrl: `/api/v1/screenshots/file/${encodeURIComponent(relativePath)}`,
+      fileSize: fileBuffer.length,
+    };
+  }
+
   async delete(filePath: string): Promise<boolean> {
     const safeRelativePath = path.normalize(filePath).replace(/^(\.\.[\/\\])+/, '');
     const absolutePath = path.join(this.basePath, safeRelativePath);

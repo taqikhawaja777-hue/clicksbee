@@ -20,6 +20,11 @@ export const ManagerSettingsView: React.FC = () => {
   const [serverRunning, setServerRunning] = useState<boolean>(false);
   const [localServerLoading, setLocalServerLoading] = useState<boolean>(true);
   const [localServerSavedMsg, setLocalServerSavedMsg] = useState<boolean>(false);
+  // Org-wide destination every employee app reads at login.
+  const [orgServer, setOrgServer] = useState<{ ip: string | null; port: number } | null>(null);
+  const [selectedLanIp, setSelectedLanIp] = useState<string>('');
+  const [publishing, setPublishing] = useState<boolean>(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
 
   const getIpc = () => {
     if (typeof window === 'undefined' || !(window as any).require) return null;
@@ -49,11 +54,30 @@ export const ManagerSettingsView: React.FC = () => {
         setLocalServerPort(settings.localServerPort);
         setScreenshotStoragePath(settings.screenshotStoragePath);
         setLanIpAddresses(ips || []);
+        setSelectedLanIp((prev) => prev || (ips && ips[0]) || '');
       })
       .catch((e: any) => console.warn('[ManagerSettingsView] Failed to load local server settings:', e))
       .finally(() => setLocalServerLoading(false));
     refreshLocalServerStatus();
+    apiService
+      .getScreenshotServerConfig()
+      .then((res: any) => setOrgServer(res?.data ?? res))
+      .catch((e) => console.warn('[ManagerSettingsView] Failed to load org screenshot destination:', e));
   }, []);
+
+  const handlePublishDestination = async (ip: string | null) => {
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      const res: any = await apiService.setScreenshotServerConfig(ip, Number(localServerPort));
+      setOrgServer(res?.data ?? res);
+      flashLocalServerSaved();
+    } catch (e: any) {
+      setPublishError(e?.message?.includes('403') ? 'Only managers and admins can change this.' : 'Failed to save - please try again.');
+    } finally {
+      setPublishing(false);
+    }
+  };
 
   const flashLocalServerSaved = () => {
     setLocalServerSavedMsg(true);
@@ -262,7 +286,7 @@ export const ManagerSettingsView: React.FC = () => {
               <div>
                 <h4 className="font-bold text-xs text-slate-800 dark:text-white">This PC's LAN IP Address</h4>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Give this (and the port below) to employees for their "Admin PC IP" setting.
+                  Use the button below to make this PC the screenshot destination for everyone.
                 </p>
               </div>
               <div className="flex items-center space-x-2">
@@ -270,6 +294,41 @@ export const ManagerSettingsView: React.FC = () => {
                 <span className="px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-800 dark:text-white font-mono">
                   {lanIpAddresses.length > 0 ? lanIpAddresses.join(', ') : 'No LAN IP detected'}
                 </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-100 dark:border-slate-800">
+              <div>
+                <h4 className="font-bold text-xs text-slate-800 dark:text-white">Employee Screenshot Destination</h4>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Every employee app sends its 1-minute screenshots here (applied at their next login).{' '}
+                  Current:{' '}
+                  <span className="font-mono font-bold text-slate-600 dark:text-slate-300">
+                    {orgServer?.ip ? `${orgServer.ip}:${orgServer.port}` : 'not set'}
+                  </span>
+                </p>
+                {publishError && <p className="text-xs text-rose-500 font-semibold mt-1">{publishError}</p>}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {lanIpAddresses.length > 1 && (
+                  <select
+                    value={selectedLanIp}
+                    onChange={(e) => setSelectedLanIp(e.target.value)}
+                    className="px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold font-mono text-slate-800 dark:text-white focus:outline-none"
+                  >
+                    {lanIpAddresses.map((ip) => (
+                      <option key={ip} value={ip}>{ip}</option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handlePublishDestination(selectedLanIp)}
+                  disabled={publishing || !selectedLanIp}
+                  className="px-4 py-2 bg-[#534bf3] text-white font-bold text-xs rounded-xl shadow-md hover:bg-indigo-700 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {publishing ? 'Saving…' : 'Use This PC'}
+                </button>
               </div>
             </div>
 
