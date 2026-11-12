@@ -25,11 +25,11 @@ jobs:
       run:
         working-directory: admin_dashboard
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
 
@@ -43,10 +43,38 @@ jobs:
             throw "Tag v$tagVersion does not match package.json version $packageVersion."
           }
 
-      - name: Build and publish to GitHub Releases
-        run: npm run release:win
+      - name: Build app
+        run: npm run build:all
+
+      # Build locally first and publish in one separate step: electron-builder's
+      # own parallel uploads once split v1.0.8's files across two draft
+      # releases, so the published one had no installer or latest.yml.
+      - name: Package installer
+        run: node scripts/run-electron-builder.js --win --publish never "-c.directories.output=release-ci"
+
+      - name: Verify all release files exist
+        run: |
+          $v = node -p "require('./package.json').version"
+          $files = @(
+            "release-ci/latest.yml",
+            "release-ci/WorkTrackPro-Setup-$v.exe",
+            "release-ci/WorkTrackPro-Setup-$v.exe.blockmap",
+            "release-ci/WorkTrackPro-$v.exe"
+          )
+          foreach ($f in $files) { if (-not (Test-Path $f)) { throw "Missing release file: $f" } }
+          if (-not (Select-String -Path "release-ci/latest.yml" -Pattern "url: WorkTrackPro-Setup-$v.exe" -SimpleMatch -Quiet)) {
+            throw "latest.yml does not reference WorkTrackPro-Setup-$v.exe"
+          }
+          Get-Content release-ci/latest.yml
+
+      - name: Publish GitHub Release
+        run: |
+          $v = node -p "require('./package.json').version"
+          gh release create "v$v" `
+            "release-ci/latest.yml" `
+            "release-ci/WorkTrackPro-Setup-$v.exe" `
+            "release-ci/WorkTrackPro-Setup-$v.exe.blockmap" `
+            "release-ci/WorkTrackPro-$v.exe" `
+            --title "$v" --notes "WorkTrackPro $v" --verify-tag --latest
         env:
-          # electron-builder's GitHub provider reads this automatically -
-          # GITHUB_TOKEN is provided by Actions itself, scoped to this repo
-          # only for the duration of this run. No manual token setup needed.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
