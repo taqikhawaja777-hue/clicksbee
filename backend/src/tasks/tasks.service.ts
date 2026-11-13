@@ -23,6 +23,13 @@ import {
 const OPEN_STATUSES: TaskStatus[] = [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Progress of a task's fill-in spreadsheet, for task lists (no cells, no file). */
+const SHEET_SUMMARY = {
+  select: { id: true, fileName: true, status: true, totalRows: true, answeredRows: true, lastSavedAt: true, submittedAt: true },
+  orderBy: { createdAt: 'desc' as const },
+  take: 1,
+};
+
 @Injectable()
 export class TasksService {
   private readonly logger = new Logger(TasksService.name);
@@ -44,6 +51,26 @@ export class TasksService {
         throw new NotFoundException(`No employee found with email ${dto.assignedToEmail}`);
       }
       assignedTo = assignee.id;
+    }
+
+    // A fill-in spreadsheet uploaded via POST /tasks/sheets - only by this
+    // same manager, and only if it isn't already attached to another task.
+    let sheet: { id: string; fileName: string } | null = null;
+    if (dto.sheetId) {
+      sheet = /^[a-f0-9]{24}$/i.test(dto.sheetId)
+        ? await this.prisma.taskSheet.findFirst({
+            where: {
+              id: dto.sheetId,
+              organizationId,
+              uploadedBy: userId,
+              OR: [{ taskId: null }, { taskId: { isSet: false } }],
+            },
+            select: { id: true, fileName: true },
+          })
+        : null;
+      if (!sheet) {
+        throw new BadRequestException('Spreadsheet upload not found or already used - attach the file again');
+      }
     }
 
     let estimatedTimeMinutes = dto.estimatedMinutes || 0;
@@ -79,6 +106,10 @@ export class TasksService {
       },
     });
 
+    if (sheet) {
+      await this.prisma.taskSheet.update({ where: { id: sheet.id }, data: { taskId: task.id } });
+    }
+
     // Personal notification to whoever it's actually assigned to - not the
     // creator (who, per requirement 8, is the manager and already knows
     // they just created it). Self-assigned tasks (assignedTo === userId,
@@ -91,7 +122,9 @@ export class TasksService {
       recipientUserId: assignedTo,
       type: NotificationType.TASK_ASSIGNED,
       title: 'New Task Assigned',
-      message: `You've been assigned a new task: ${task.title}${task.attachmentUrl ? ' (document attached)' : ''}`,
+      message: `You've been assigned a new task: ${task.title}${task.attachmentUrl ? ' (document attached)' : ''}${
+        sheet ? ` (spreadsheet "${sheet.fileName}" to fill in - open it from My Tasks)` : ''
+      }`,
       attachmentUrl: task.attachmentUrl,
       attachmentName: task.attachmentName,
       metadata: { taskId: task.id },
@@ -126,6 +159,7 @@ export class TasksService {
           orderBy: { createdAt: 'asc' },
           include: { uploader: { select: { id: true, firstName: true, lastName: true, role: true } } },
         },
+        sheets: SHEET_SUMMARY,
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -142,6 +176,7 @@ export class TasksService {
           orderBy: { createdAt: 'asc' },
           include: { uploader: { select: { id: true, firstName: true, lastName: true, role: true } } },
         },
+        sheets: SHEET_SUMMARY,
       },
     });
 

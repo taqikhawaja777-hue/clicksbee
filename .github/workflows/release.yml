@@ -67,7 +67,10 @@ jobs:
           }
           Get-Content release-ci/latest.yml
 
-      - name: Publish GitHub Release
+      # Created as a DRAFT with every file attached in one step - the owner
+      # reviews and clicks "Publish release" on GitHub. Installed apps only
+      # see the update (latest.yml) once it is published.
+      - name: Create draft GitHub Release
         run: |
           $v = node -p "require('./package.json').version"
           gh release create "v$v" `
@@ -75,6 +78,6 @@ jobs:
             "release-ci/WorkTrackPro-Setup-$v.exe" `
             "release-ci/WorkTrackPro-Setup-$v.exe.blockmap" `
             "release-ci/WorkTrackPro-$v.exe" `
-            --title "$v" --notes "WorkTrackPro $v" --verify-tag --latest
+            --title "$v" --notes "WorkTrackPro $v" --verify-tag --draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

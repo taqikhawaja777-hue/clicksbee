@@ -90,7 +90,7 @@ export type IdleStatus =
   | 'CHECKED_OUT'
   | 'ON_BREAK'
   | 'ACTIVE_JABBER'
-  | 'ACTIVE_WILDIX'
+  | 'ACTIVE_3CX'
   | 'ACTIVE_YEASTAR'
   | 'ACTIVE'
   | 'IDLE'
@@ -107,7 +107,7 @@ export interface EmployeeIdleStatus {
   activeSeconds: number;
   idleSeconds: number;
   jabberSeconds: number;
-  wildixSeconds: number;
+  threeCxSeconds: number;
   yeastarSeconds: number;
   productivityPercentage: number;
   status: IdleStatus;
@@ -190,7 +190,7 @@ export interface ShiftSummary {
   activeSeconds: number;
   idleSeconds: number;
   jabberSeconds: number;
-  wildixSeconds: number;
+  threeCxSeconds: number;
   yeastarSeconds: number;
   // Unified Overall Productivity score - Attendance Ratio + App Focus
   // Score + Compliance Score, weighted. See
@@ -261,7 +261,7 @@ export interface DailyReportRow {
   activeSeconds: number;
   idleSeconds: number;
   jabberSeconds: number;
-  wildixSeconds: number;
+  threeCxSeconds: number;
   yeastarSeconds: number;
   productivityPercentage: number;
   cameraActiveSeconds: number;

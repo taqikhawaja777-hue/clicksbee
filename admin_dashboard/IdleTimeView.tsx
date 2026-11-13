@@ -7,7 +7,7 @@ import { PresenceVerificationCard } from './PresenceVerificationCard';
 
 const STATUS_BADGE: Record<IdleStatus, { label: string; classes: string }> = {
   ACTIVE_JABBER: { label: 'Active · Jabber', classes: 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50' },
-  ACTIVE_WILDIX: { label: 'Active · Wildix', classes: 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-900/50' },
+  ACTIVE_3CX: { label: 'Active · 3CX', classes: 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-900/50' },
   ACTIVE_YEASTAR: { label: 'Active · Yeastar Linkus Lite', classes: 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-900/50' },
   ACTIVE: { label: 'Active', classes: 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50' },
   IDLE: { label: 'Idle', classes: 'bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-900/50' },
@@ -31,7 +31,7 @@ function average(employees: EmployeeIdleStatus[], pick: (e: EmployeeIdleStatus) 
 
 /**
  * "Idle Time" — replaces the Recordings section in the sidebar. Per-employee
- * mouse/keyboard idle vs. active time, with Cisco Jabber / Wildix broken out
+ * mouse/keyboard idle vs. active time, with Cisco Jabber / 3CX broken out
  * specifically, sourced from the FastAPI + Supabase idle-time service
  * (GET /api/idle-time/summary), polled every 20s.
  */
@@ -130,7 +130,7 @@ export const IdleTimeView: React.FC = () => {
                   <th className="px-6 py-3 font-bold">Active</th>
                   <th className="px-6 py-3 font-bold">Idle</th>
                   <th className="px-6 py-3 font-bold">Cisco Jabber</th>
-                  <th className="px-6 py-3 font-bold">Wildix</th>
+                  <th className="px-6 py-3 font-bold">3CX</th>
                   <th className="px-6 py-3 font-bold">Yeastar Linkus Lite</th>
                   <th className="px-6 py-3 font-bold text-right">Productivity</th>
                 </tr>
@@ -163,7 +163,7 @@ export const IdleTimeView: React.FC = () => {
                         {formatDuration(employee.jabberSeconds)}
                       </td>
                       <td className="px-6 py-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                        {formatDuration(employee.wildixSeconds)}
+                        {formatDuration(employee.threeCxSeconds)}
                       </td>
                       <td className="px-6 py-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
                         {formatDuration(employee.yeastarSeconds)}

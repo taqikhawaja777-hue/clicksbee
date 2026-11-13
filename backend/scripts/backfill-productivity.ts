@@ -30,7 +30,7 @@ async function backfill(startDate?: string, endDate?: string) {
 
   console.log(`[Backfill] Loaded ${users.length} users, ${attendanceRecords.length} attendance rows, ${idleLogs.length} idle logs.`);
 
-  const dialerAliases = ['jabber', 'ciscojabber', 'ciscocollabhost', 'wildix', 'x-bees', 'wixphone', 'yeastar', 'yeaster', 'linkus'];
+  const dialerAliases = ['jabber', 'ciscojabber', 'ciscocollabhost', '3cx', 'wildix', 'x-bees', 'wixphone', 'yeastar', 'yeaster', 'linkus'];
 
   let processedCount = 0;
 

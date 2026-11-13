@@ -1,8 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ClipboardList, Mail, CheckCircle2, AlertCircle, Inbox, Paperclip, FileText, X } from 'lucide-react';
-import { apiService } from './src/services/api.service';
+import { apiService, apiErrorMessage, TaskSheetSummary } from './src/services/api.service';
 import { AttachmentPreviewModal, AttachmentRef, ACCEPTED_DOC_TYPES } from './AttachmentPreviewModal';
 import { TaskDocuments, TaskReply } from './TaskDocuments';
+import { TaskSheetChip, TaskSheetWorkspace } from './TaskSheetWorkspace';
+
+/** Spreadsheets become a fill-in sheet for the assignee instead of a plain document. */
+const SPREADSHEET_EXT = /\.(xlsx|xlsm|xlsb|xls|ods|csv|tsv)$/i;
+const TASK_FILE_TYPES = `${ACCEPTED_DOC_TYPES},.xlsm,.xlsb,.ods,.tsv`;
 
 type Priority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 
@@ -19,6 +24,7 @@ interface TaskItem {
   attachmentUrl?: string | null;
   attachmentName?: string | null;
   attachments?: TaskReply[];
+  sheets?: TaskSheetSummary[];
 }
 
 const PRIORITIES: Priority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
@@ -46,6 +52,8 @@ export const CreateTaskPanel: React.FC = () => {
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null);
+  const [sheetTaskId, setSheetTaskId] = useState<string | null>(null);
+  const isSpreadsheet = !!attachedFile && SPREADSHEET_EXT.test(attachedFile.name);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,8 +62,8 @@ export const CreateTaskPanel: React.FC = () => {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [isLoadingTasks, setIsLoadingTasks] = useState(true);
 
-  const loadTasks = async () => {
-    setIsLoadingTasks(true);
+  const loadTasks = async (quiet = false) => {
+    if (!quiet) setIsLoadingTasks(true);
     try {
       const result: any = await apiService.getTasks();
       const list = Array.isArray(result) ? result : result?.data || [];
@@ -82,7 +90,13 @@ export const CreateTaskPanel: React.FC = () => {
     try {
       let attachmentUrl: string | undefined;
       let attachmentName: string | undefined;
-      if (attachedFile) {
+      let sheetId: string | undefined;
+      let sheetRows = 0;
+      if (attachedFile && isSpreadsheet) {
+        const uploaded = await apiService.uploadTaskSheet(attachedFile);
+        sheetId = uploaded.sheetId;
+        sheetRows = uploaded.totalRows;
+      } else if (attachedFile) {
         const uploaded = await apiService.uploadTaskAttachment(attachedFile);
         attachmentUrl = uploaded.url;
         attachmentName = uploaded.fileName;
@@ -97,9 +111,14 @@ export const CreateTaskPanel: React.FC = () => {
         estimatedMinutes: estimatedMinutes ? Number(estimatedMinutes) : undefined,
         attachmentUrl,
         attachmentName,
+        sheetId,
       });
 
-      setSuccessMsg(`Task assigned to ${assignedToEmail.trim()}${attachedFile ? ' with document' : ''}.`);
+      setSuccessMsg(
+        `Task assigned to ${assignedToEmail.trim()}${
+          sheetId ? ` with a ${sheetRows}-row spreadsheet to fill in` : attachedFile ? ' with document' : ''
+        }.`,
+      );
       setTitle('');
       setDescription('');
       setAssignedToEmail('');
@@ -110,7 +129,7 @@ export const CreateTaskPanel: React.FC = () => {
       if (fileInputRef.current) fileInputRef.current.value = '';
       await loadTasks();
     } catch (err: any) {
-      setError(err?.message || 'Failed to create task. Check the email is a registered employee.');
+      setError(apiErrorMessage(err, 'Failed to create task. Check the email is a registered employee.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -185,7 +204,7 @@ export const CreateTaskPanel: React.FC = () => {
             <input
               ref={fileInputRef}
               type="file"
-              accept={ACCEPTED_DOC_TYPES}
+              accept={TASK_FILE_TYPES}
               onChange={(e) => setAttachedFile(e.target.files?.[0] || null)}
               className="hidden"
               id="task-attachment-input"
@@ -211,7 +230,9 @@ export const CreateTaskPanel: React.FC = () => {
               </span>
             )}
             <span className="text-[11px] text-slate-400">
-              PDF, Word, Excel or image. The employee can preview it under My Tasks and reply with their own file.
+              {isSpreadsheet
+                ? "Spreadsheet: the employee opens it in the app, can't download it or change your columns, copies only numbers, and fills in Client Response + Remarks for each row."
+                : 'PDF, Word, image or spreadsheet. A spreadsheet (Excel, CSV, ODS) opens as a fill-in sheet for the employee.'}
             </span>
           </div>
         </div>
@@ -320,6 +341,9 @@ export const CreateTaskPanel: React.FC = () => {
                     <td className="py-4 px-6 text-slate-800 dark:text-slate-200 font-semibold align-top">
                       <div>{task.title}</div>
                       <TaskDocuments task={task} onOpen={setPreviewAttachment} />
+                      {task.sheets?.[0] && (
+                        <TaskSheetChip sheet={task.sheets[0]} actionLabel="View responses" onOpen={() => setSheetTaskId(task.id)} />
+                      )}
                     </td>
                     <td className="py-4 px-6 text-slate-600 dark:text-slate-400">
                       {task.assignee ? `${task.assignee.firstName} ${task.assignee.lastName}` : '—'}
@@ -339,6 +363,10 @@ export const CreateTaskPanel: React.FC = () => {
       </div>
 
       <AttachmentPreviewModal attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
+
+      {sheetTaskId && (
+        <TaskSheetWorkspace taskId={sheetTaskId} onClose={() => setSheetTaskId(null)} onChanged={() => loadTasks(true)} />
+      )}
     </div>
   );
 };

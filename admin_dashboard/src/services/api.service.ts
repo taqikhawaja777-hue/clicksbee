@@ -65,6 +65,68 @@ export interface TaskTicket {
   onTime: boolean | null;
 }
 
+/** Fill-in spreadsheet attached to a task. */
+export type TaskSheetStatus = 'DRAFT' | 'SUBMITTED';
+
+export interface TaskSheetSummary {
+  id: string;
+  fileName: string;
+  status: TaskSheetStatus;
+  totalRows: number;
+  answeredRows: number;
+  lastSavedAt: string | null;
+  submittedAt: string | null;
+}
+
+export interface TaskSheetRowResponse {
+  response: string | null;
+  remarks: string | null;
+  updatedAt: string;
+}
+
+export interface TaskSheetData extends TaskSheetSummary {
+  taskTitle: string;
+  assigneeName: string;
+  sheets: { name: string; header: string[]; rows: string[][] }[];
+  responses: Record<string, TaskSheetRowResponse>;
+  responseOptions: string[];
+  canEdit: boolean;
+  canDownload: boolean;
+  canReopen: boolean;
+}
+
+export type TaskSheetChanges = Record<string, { response: string; remarks: string }>;
+
+export interface TaskSheetSaveResult {
+  status: TaskSheetStatus;
+  responses: Record<string, TaskSheetRowResponse>;
+  answeredRows: number;
+  totalRows: number;
+  lastSavedAt: string | null;
+  submittedAt: string | null;
+}
+
+export interface TaskSheetUpload {
+  sheetId: string;
+  fileName: string;
+  sheetCount: number;
+  totalRows: number;
+  columns: string[];
+}
+
+/** Readable message from an ApiService error ("API Error 400: {json}" -> the backend's message). */
+export function apiErrorMessage(err: unknown, fallback = 'Something went wrong - please try again.'): string {
+  const raw = err instanceof Error ? err.message : String(err || '');
+  const json = raw.replace(/^API Error \d+:\s*/, '');
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed?.message) return String(parsed.message);
+  } catch {
+    // not JSON - fall through
+  }
+  return raw && !/^API Error/.test(raw) && raw !== 'Failed to fetch' ? raw : fallback;
+}
+
 const ACCESS_TOKEN_KEY = 'auth_token';
 const REFRESH_TOKEN_KEY = 'auth_refresh_token';
 const EXPIRES_AT_KEY = 'auth_token_expires_at';
@@ -373,8 +435,61 @@ class ApiService {
     estimatedMinutes?: number;
     attachmentUrl?: string;
     attachmentName?: string;
+    sheetId?: string;
   }) {
     return this.post('/tasks', dto);
+  }
+
+  /** Employee app: went idle (2+ min, no input) or came back - backend notifies the manager and logs it. */
+  async reportIdleEvent(body: { event: 'IDLE_STARTED' | 'IDLE_ENDED'; idleSince: string; endedAt?: string }) {
+    return this.post('/tracking/idle-events', body);
+  }
+
+  /** Upload a fill-in spreadsheet (manager) - pass the returned sheetId to createTask. */
+  async uploadTaskSheet(file: File) {
+    return this.uploadFile<TaskSheetUpload>('/tasks/sheets', file);
+  }
+
+  /** The task's spreadsheet cells + saved responses - never the file itself. */
+  async getTaskSheet(taskId: string) {
+    return this.get<{ data: TaskSheetData }>(`/tasks/${taskId}/sheet`);
+  }
+
+  /** Assignee saves changed rows only, keyed "sheetIndex:rowIndex". */
+  async saveTaskSheet(taskId: string, responses: TaskSheetChanges) {
+    return this.put<{ data: TaskSheetSaveResult }>(`/tasks/${taskId}/sheet/responses`, { responses });
+  }
+
+  /** Assignee sends the sheet to the manager (saves any unsaved rows first); it locks afterwards. */
+  async submitTaskSheet(taskId: string, responses: TaskSheetChanges) {
+    return this.post<{ data: TaskSheetSaveResult }>(`/tasks/${taskId}/sheet/submit`, { responses });
+  }
+
+  /** Manager sends a submitted sheet back to the assignee for changes. */
+  async reopenTaskSheet(taskId: string, note?: string) {
+    return this.post(`/tasks/${taskId}/sheet/reopen`, { note: note || undefined });
+  }
+
+  /** Manager-only download (the backend refuses the assignee). */
+  async downloadTaskSheet(taskId: string, version: 'original' | 'completed'): Promise<{ blob: Blob; fileName: string }> {
+    const doFetch = () =>
+      fetch(`${this.baseUrl}/tasks/${taskId}/sheet/file?version=${version}`, {
+        headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      });
+    let response = await doFetch();
+    if (response.status === 401 && this.refreshToken) {
+      await this.refreshAccessToken();
+      response = await doFetch();
+    }
+    if (!response.ok) {
+      if (response.status === 401) this.handleSessionExpired();
+      throw new Error(`API Error ${response.status}: ${await response.text()}`);
+    }
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+    const plain = /filename="([^"]+)"/i.exec(disposition)?.[1];
+    const fileName = encoded ? decodeURIComponent(encoded) : plain || `task-sheet-${version}.xlsx`;
+    return { blob: await response.blob(), fileName };
   }
 
   /** Fetch tasks — the backend scopes this to "my tasks" for an EMPLOYEE
@@ -490,7 +605,7 @@ class ApiService {
     return this.uploadFile('/notifications/attachment', file);
   }
 
-  private async uploadFile(path: string, file: File): Promise<{ url: string; fileName: string }> {
+  private async uploadFile<T = { url: string; fileName: string }>(path: string, file: File): Promise<T> {
     const doUpload = (): Promise<Response> => {
       const formData = new FormData();
       formData.append('file', file);
@@ -512,7 +627,9 @@ class ApiService {
     }
     if (!response.ok) {
       if (response.status === 401) this.handleSessionExpired();
-      throw new Error(`Attachment upload failed: HTTP ${response.status}`);
+      // Surface the backend's reason (e.g. "No data rows found...") instead of just the status.
+      const reason = await response.json().then((j) => j?.message, () => null);
+      throw new Error(reason ? String(reason) : `Attachment upload failed: HTTP ${response.status}`);
     }
     // TransformInterceptor wraps every JSON response as {success, data}; the
     // caller needs the inner {url, fileName}.

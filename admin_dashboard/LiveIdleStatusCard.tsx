@@ -14,8 +14,8 @@ const STATUS_META: Record<
     classes: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/40',
     dot: 'bg-emerald-500',
   },
-  ACTIVE_WILDIX: {
-    label: 'Active in Wildix',
+  ACTIVE_3CX: {
+    label: 'Active in 3CX',
     icon: PhoneCall,
     classes: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border-indigo-500/40',
     dot: 'bg-indigo-500',
@@ -115,7 +115,7 @@ const EmployeeStatusTile: React.FC<{ employee: EmployeeIdleStatus }> = ({ employ
  * Replaces the old Socket.IO screen-recording live-feed grid on the Manager
  * Supervisor Portal overview: per-employee current status derived from
  * mouse/keyboard idle detection and active-window recognition (Cisco
- * Jabber / Wildix called out specifically), polled from the FastAPI
+ * Jabber / 3CX called out specifically), polled from the FastAPI
  * idle-time service rather than pushed over a socket.
  */
 export const LiveIdleStatusCard: React.FC = () => {
@@ -132,7 +132,7 @@ export const LiveIdleStatusCard: React.FC = () => {
           </div>
           <h2 className="text-lg font-extrabold text-slate-800 dark:text-white">Team Input Activity</h2>
           <p className="text-xs text-slate-400 font-medium mt-0.5">
-            Mouse/keyboard idle detection & active-window tracking (Cisco Jabber / Wildix flagged) — no screen
+            Mouse/keyboard idle detection & active-window tracking (Cisco Jabber / 3CX flagged) — no screen
             recording or streaming involved.
           </p>
         </div>

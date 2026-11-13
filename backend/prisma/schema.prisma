@@ -615,6 +615,7 @@ model Task {
   assigner     User?        @relation("CreatedTasks", fields: [assignedBy], references: [id])
   screenshots  Screenshot[]
   attachments  TaskAttachment[]
+  sheets       TaskSheet[]
 
   @@index([organizationId, assignedTo, status])
   @@index([organizationId, projectId])
@@ -638,6 +639,43 @@ model TaskAttachment {
 
   @@index([taskId, createdAt])
   @@index([organizationId])
+}
+
+enum TaskSheetStatus {
+  DRAFT
+  SUBMITTED
+}
+
+// A spreadsheet the assigner attached to a task for the assignee to fill in
+// (a client response + remarks per row). The assignee only ever receives the
+// parsed cell values - the file itself is stored here (Render's disk is wiped
+// on every deploy) and only a manager/admin can download it.
+model TaskSheet {
+  id             String          @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String          @db.ObjectId
+  // Null between upload (POST /tasks/sheets) and task creation; unlinked
+  // uploads are swept after a day.
+  taskId         String?         @db.ObjectId
+  uploadedBy     String          @db.ObjectId
+  fileName       String
+  mimeType       String?
+  originalFile   Bytes
+  // [{ name, header: string[], rows: string[][] }]
+  sheets         Json
+  // { "<sheetIndex>:<rowIndex>": { response, remarks, updatedAt } }
+  responses      Json?
+  status         TaskSheetStatus @default(DRAFT)
+  totalRows      Int
+  answeredRows   Int             @default(0)
+  lastSavedAt    DateTime?
+  submittedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  task Task? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([organizationId, createdAt])
 }
 
 model AuditLog {

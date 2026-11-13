@@ -4,7 +4,7 @@
  * Always-on, whole-workday counterpart to ProductivityCaptureService (which
  * only runs for the duration of one Task Session). Tracks mouse/keyboard
  * idle time and which application is focused for the entire day, with
- * dedicated recognition of Cisco Jabber, Wildix, and Yeastar Linkus Lite, and reports cumulative
+ * dedicated recognition of Cisco Jabber, the 3CX web dialer, and Yeastar Linkus Lite, and reports cumulative
  * daily totals to the backend MongoDB tracking API at `/api/v1/tracking/idle-snapshots`.
  *
  * - Polls every 15-30s (POLL_INTERVAL_MS below) via
@@ -15,13 +15,13 @@
  * - Persistent disk-backed queue on network failure with automatic retry and idempotent upserts.
  * - Resets accumulators at the shift's 19:00 Asia/Karachi rollover.
  */
-import { powerMonitor, ipcMain, app } from 'electron';
+import { powerMonitor, ipcMain, app, BrowserWindow, Notification, shell } from 'electron';
 import { BACKEND_URL } from './serverConfig';
 import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
-export type ActiveAppLabel = 'Cisco Jabber' | 'Wildix' | 'Yeastar Linkus Lite' | 'Other';
+export type ActiveAppLabel = 'Cisco Jabber' | '3CX' | 'Yeastar Linkus Lite' | 'Other';
 
 const IDLE_THRESHOLD_SECONDS = 120; // 2 minutes
 const POLL_INTERVAL_MS = 20000; // 20s
@@ -29,7 +29,7 @@ const BATCH_INTERVAL_MS = 90000; // 90s
 const API_BASE_URL_DEFAULT = BACKEND_URL;
 
 // Configurable dialer alias mapping - covers Windows, Linux, and macOS process & window names
-export const DIALER_SIGNATURES: Record<'Cisco Jabber' | 'Wildix' | 'Yeastar Linkus Lite', RegExp[]> = {
+export const DIALER_SIGNATURES: Record<'Cisco Jabber' | '3CX' | 'Yeastar Linkus Lite', RegExp[]> = {
   'Cisco Jabber': [
     /cisco\s*jabber/i,
     /^ciscojabber(\.exe)?$/i,
@@ -38,12 +38,13 @@ export const DIALER_SIGNATURES: Record<'Cisco Jabber' | 'Wildix' | 'Yeastar Link
     /\bjabber\b/i,
     /cisco\s*collab/i,
   ],
-  'Wildix': [
-    /wildix/i,
-    /^wixphone(\.exe)?$/i,
-    /^x-bees(\.exe)?$/i,
-    /^wildix(\.exe)?$/i,
-    /wildix\s*collaboration/i,
+  // 3CX web dialer (https://dialpro.3cx.ca:5001). Windows can't read a
+  // browser's URL, so it's matched on the window title: the page title is
+  // "3CX Webclient", i.e. "3CX Webclient - Google Chrome" / "- Microsoft Edge".
+  // Also covers the 3CX desktop/installed app (3CXDesktopApp.exe, "3CX").
+  '3CX': [
+    /3cx/i,
+    /dialpro\.3cx/i,
   ],
   'Yeastar Linkus Lite': [
     /yeastar|yeaster|linkus/i,
@@ -76,7 +77,7 @@ function classifyActiveApp(win: ActiveWinResult | null): ActiveAppLabel {
   );
   for (const candidate of candidates) {
     if (DIALER_SIGNATURES['Cisco Jabber'].some((re) => re.test(candidate))) return 'Cisco Jabber';
-    if (DIALER_SIGNATURES['Wildix'].some((re) => re.test(candidate))) return 'Wildix';
+    if (DIALER_SIGNATURES['3CX'].some((re) => re.test(candidate))) return '3CX';
     if (DIALER_SIGNATURES['Yeastar Linkus Lite'].some((re) => re.test(candidate))) return 'Yeastar Linkus Lite';
   }
   return 'Other';
@@ -143,6 +144,80 @@ class IdleTimeTracker {
   private appFocusSeconds: Record<string, number> = {};
   private lastActiveApp: string | null = null;
   private lastIsIdle = false;
+
+  // Current idle episode (ms epoch of the last input), for the idle alert.
+  private idleEpisodeStart: number | null = null;
+  private idleNotification: Notification | null = null;
+
+  /**
+   * Idle alert on the employee's PC the moment they cross the idle
+   * threshold: Windows notification with sound, a beep, and a flashing
+   * taskbar button. The renderer shows the in-app alert and reports the
+   * event (it holds the login token) - see IdleAlertWatcher.tsx.
+   */
+  private startIdleEpisode(idleSince: number): void {
+    this.idleEpisodeStart = idleSince;
+    this.sendIdleAlert({ state: 'idle', idleSince: new Date(idleSince).toISOString() });
+    try {
+      shell.beep();
+    } catch {
+      // no sound device
+    }
+    try {
+      if (Notification.isSupported()) {
+        this.idleNotification?.close();
+        const notification = new Notification({
+          title: 'You are idle',
+          body: 'No mouse or keyboard activity for 2 minutes. Move the mouse or press a key to continue working.',
+          urgency: 'critical',
+          timeoutType: 'never',
+        });
+        notification.on('click', () => {
+          const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+          if (win) {
+            if (win.isMinimized()) win.restore();
+            win.show();
+            win.focus();
+          }
+        });
+        notification.show();
+        this.idleNotification = notification;
+      }
+    } catch (err) {
+      console.warn('[IdleTimeTracker] Could not show idle notification:', err);
+    }
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (!w.isDestroyed()) w.flashFrame(true);
+    });
+  }
+
+  /** reason 'active' = input resumed; 'break'/'stopped' = closed without the person returning. */
+  private endIdleEpisode(reason: 'active' | 'break' | 'stopped', endedAt: number = Date.now()): void {
+    if (this.idleEpisodeStart === null) return;
+    const idleSince = this.idleEpisodeStart;
+    this.idleEpisodeStart = null;
+    this.sendIdleAlert({
+      state: 'active',
+      reason,
+      idleSince: new Date(idleSince).toISOString(),
+      endedAt: new Date(Math.max(endedAt, idleSince)).toISOString(),
+    });
+    try {
+      this.idleNotification?.close();
+    } catch {
+      // already dismissed
+    }
+    this.idleNotification = null;
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (!w.isDestroyed()) w.flashFrame(false);
+    });
+  }
+
+  private sendIdleAlert(payload: Record<string, unknown>): void {
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (!w.isDestroyed()) w.webContents.send('idle-alert', payload);
+    });
+  }
 
   private getQueueFilePath(): string {
     try {
@@ -300,8 +375,8 @@ class IdleTimeTracker {
                 detected = 'Cisco Jabber';
                 break;
               }
-              if (DIALER_SIGNATURES['Wildix'].some((re) => re.test(procName))) {
-                detected = 'Wildix';
+              if (DIALER_SIGNATURES['3CX'].some((re) => re.test(procName))) {
+                detected = '3CX';
                 break;
               }
               if (DIALER_SIGNATURES['Yeastar Linkus Lite'].some((re) => re.test(procName))) {
@@ -364,6 +439,7 @@ class IdleTimeTracker {
     if (!this.isTracking) return;
     console.log('[IdleTimeTracker] Stopping idle/active tracking.');
     this.isTracking = false;
+    this.endIdleEpisode('stopped');
 
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
@@ -385,6 +461,8 @@ class IdleTimeTracker {
     if (!this.isTracking) return;
 
     if (!isTrackableWorkTime()) {
+      // Break or off-shift: an open idle episode ends here, and no new alert fires.
+      this.endIdleEpisode('break');
       return;
     }
 
@@ -400,10 +478,10 @@ class IdleTimeTracker {
     let appLabel = classifyActiveApp(win);
 
     // If the dialer is the FOCUSED window and the system is idle, treat as active —
-    // the employee is likely on a headset call watching the Jabber/Wildix/Yeastar UI.
+    // the employee is likely on a headset call watching the Jabber/3CX/Yeastar UI.
     // If the dialer is in the background/tray and the system is idle, it IS idle.
     const dialerIsFocused =
-      appLabel === 'Cisco Jabber' || appLabel === 'Wildix' || appLabel === 'Yeastar Linkus Lite';
+      appLabel === 'Cisco Jabber' || appLabel === '3CX' || appLabel === 'Yeastar Linkus Lite';
     const isIdle = systemIdle && !dialerIsFocused;
 
     const pollSeconds = POLL_INTERVAL_MS / 1000;
@@ -416,6 +494,15 @@ class IdleTimeTracker {
 
     this.lastActiveApp = isIdle ? null : appLabel;
     this.lastIsIdle = isIdle;
+
+    const now = Date.now();
+    if (isIdle && this.idleEpisodeStart === null) {
+      this.startIdleEpisode(now - idleSecondsNow * 1000);
+    } else if (!isIdle && this.idleEpisodeStart !== null) {
+      // Input resumed -> it happened idleSecondsNow ago. A focused dialer
+      // with no input (headset call) ends the episode now.
+      this.endIdleEpisode('active', systemIdle ? now : now - idleSecondsNow * 1000);
+    }
   }
 
   private async flushSnapshot(): Promise<void> {

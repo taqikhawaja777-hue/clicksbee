@@ -33,6 +33,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: true,
       contextIsolation: false,
+      // DevTools in an installed build would let an employee read task
+      // spreadsheets out of the page (and tamper with tracking) - dev only.
+      devTools: !app.isPackaged,
     },
   });
 
@@ -183,7 +186,20 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'fileMenu' },
     { role: 'editMenu' },
-    { role: 'viewMenu' },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        ...(app.isPackaged ? [] : [{ role: 'toggleDevTools' as const }]),
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
     { role: 'windowMenu' },
     {
       role: 'help',
@@ -209,6 +225,9 @@ function createApplicationMenu(): void {
 }
 
 app.whenReady().then(() => {
+  // Windows only shows toast notifications (the idle alert) for an app with
+  // an AppUserModelID - match electron-builder's appId.
+  if (process.platform === 'win32') app.setAppUserModelId('com.stitchmonitor.worktrackpro');
   const credentialsPath = path.join(app.getPath('userData'), 'auth-credentials.json');
   ipcMain.handle('auth:get-saved-credentials', () => {
     if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(credentialsPath)) return null;

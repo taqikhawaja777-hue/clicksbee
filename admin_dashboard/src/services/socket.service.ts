@@ -48,9 +48,16 @@ class SocketService {
     this.socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: 10,
+      // Never give up: after a long drop (PC asleep, internet down, backend
+      // redeploy) the app must come back online by itself.
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 2000,
-      auth: { token: apiService.getToken() },
+      reconnectionDelayMax: 10000,
+      // A function, not a fixed object: every automatic reconnect sends the
+      // CURRENT access token. A fixed object resent the token from app start,
+      // which expires after 15 min - the server then treated the reconnected
+      // socket as anonymous and managers saw "Employee offline".
+      auth: (cb) => cb({ token: apiService.getToken() }),
     });
 
     this.socket.on('connect', () => {

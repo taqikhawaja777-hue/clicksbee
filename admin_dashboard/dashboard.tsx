@@ -53,6 +53,7 @@ import { MonitoringBanner } from './MonitoringBanner';
 import { TaskProductivityDashboard } from './TaskProductivityDashboard';
 import { CreateTaskPanel } from './CreateTaskPanel';
 import { MyTasksView } from './MyTasksView';
+import { IdleAlertWatcher } from './IdleAlertWatcher';
 import { useEmployee } from './EmployeeContext';
 import { apiService, API_ORIGIN } from './src/services/api.service';
 import { productivityApiService } from './src/services/productivityApi.service';
@@ -604,6 +605,7 @@ export const AdminDashboard: React.FC = () => {
           {user.role === 'EMPLOYEE' && (
             <MonitoringBanner isMonitoringActive={session.isActive} />
           )}
+          {user.role === 'EMPLOYEE' && <IdleAlertWatcher />}
 
           {/* ================= CONDITIONAL TAB RENDERING ================= */}
 

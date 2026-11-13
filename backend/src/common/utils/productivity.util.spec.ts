@@ -55,7 +55,7 @@ describe('Productivity Calculation Engine', () => {
         activeSeconds: 7200, // 2 hours
         idleSeconds: 300,
         jabberSeconds: 0,
-        wildixSeconds: 0,
+        threeCxSeconds: 0,
         yeastarSeconds: 0,
         shiftDurationSeconds: 14400, // 4 hours
       });

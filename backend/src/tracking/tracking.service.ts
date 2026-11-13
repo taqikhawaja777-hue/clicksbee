@@ -16,6 +16,11 @@ export interface IdleSnapshotInput {
 
 type AppFocus = Record<string, number>;
 
+// 3CX web dialer (the desktop app records it as "3CX"). It replaced Wildix;
+// Wildix keys from older snapshots are still counted here so past days keep
+// their dialer time.
+const THREE_CX_ALIASES = ['3cx', 'wildix', 'x-bees', 'wixphone'];
+
 @Injectable()
 export class TrackingService {
   constructor(
@@ -154,7 +159,7 @@ export class TrackingService {
     const idleSeconds = idle?.idleSeconds || 0;
     const focus = (idle?.appFocusSeconds || {}) as AppFocus;
     const jabberSeconds = this.getAppSeconds(focus, ['jabber', 'ciscojabber', 'ciscocollabhost']);
-    const wildixSeconds = this.getAppSeconds(focus, ['wildix', 'x-bees', 'wixphone']);
+    const threeCxSeconds = this.getAppSeconds(focus, THREE_CX_ALIASES);
     const yeastarSeconds = this.getAppSeconds(focus, ['yeastar', 'yeaster', 'linkus']);
     const isCheckedIn = !!attendanceRow?.clockIn && !attendanceRow.clockOut;
     const shiftEnd = attendanceRow?.clockOut || (isCheckedIn ? now : null);
@@ -174,7 +179,7 @@ export class TrackingService {
       activeSeconds,
       idleSeconds,
       jabberSeconds,
-      wildixSeconds,
+      threeCxSeconds,
       yeastarSeconds,
       shiftDurationSeconds,
     });
@@ -187,7 +192,7 @@ export class TrackingService {
       isOnBreak: isOnBreak || (targetDate === getShiftDayString(now) && isScheduledBreakTime(now)),
       breakSeconds,
       shiftDurationSeconds,
-      activeSeconds, idleSeconds, jabberSeconds, wildixSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+      activeSeconds, idleSeconds, jabberSeconds, threeCxSeconds, yeastarSeconds, cameraActiveSeconds: 0,
       hasActivitySnapshot: !!idle,
       productivityPercentage: metrics.overallProductivityPercentage,
       status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
@@ -259,7 +264,7 @@ export class TrackingService {
       const idleSeconds = idle?.idleSeconds || 0;
       const focus = (idle?.appFocusSeconds || {}) as AppFocus;
       const jabberSeconds = this.getAppSeconds(focus, ['jabber', 'ciscojabber', 'ciscocollabhost']);
-      const wildixSeconds = this.getAppSeconds(focus, ['wildix', 'x-bees', 'wixphone']);
+      const threeCxSeconds = this.getAppSeconds(focus, THREE_CX_ALIASES);
       const yeastarSeconds = this.getAppSeconds(focus, ['yeastar', 'yeaster', 'linkus']);
       const isCheckedIn = !!attendanceRow?.clockIn && !attendanceRow.clockOut;
       const shiftEnd = attendanceRow?.clockOut || (isCheckedIn ? now : null);
@@ -279,7 +284,7 @@ export class TrackingService {
         activeSeconds,
         idleSeconds,
         jabberSeconds,
-        wildixSeconds,
+        threeCxSeconds,
         yeastarSeconds,
         shiftDurationSeconds,
       });
@@ -292,7 +297,7 @@ export class TrackingService {
         isOnBreak: breakState.isOnBreak || (date === getShiftDayString(now) && isScheduledBreakTime(now)),
         breakSeconds,
         shiftDurationSeconds,
-        activeSeconds, idleSeconds, jabberSeconds, wildixSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+        activeSeconds, idleSeconds, jabberSeconds, threeCxSeconds, yeastarSeconds, cameraActiveSeconds: 0,
         hasActivitySnapshot: !!idle,
         productivityPercentage: metrics.overallProductivityPercentage,
         status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
@@ -364,7 +369,7 @@ export class TrackingService {
         const idleSeconds = idle?.idleSeconds || 0;
         const focus = (idle?.appFocusSeconds || {}) as AppFocus;
         const jabberSeconds = this.getAppSeconds(focus, ['jabber', 'ciscojabber', 'ciscocollabhost']);
-        const wildixSeconds = this.getAppSeconds(focus, ['wildix', 'x-bees', 'wixphone']);
+        const threeCxSeconds = this.getAppSeconds(focus, THREE_CX_ALIASES);
         const yeastarSeconds = this.getAppSeconds(focus, ['yeastar', 'yeaster', 'linkus']);
         const isCheckedIn = !!attendanceRow?.clockIn && !attendanceRow.clockOut;
         const shiftEnd = attendanceRow?.clockOut || (isCheckedIn ? now : null);
@@ -384,7 +389,7 @@ export class TrackingService {
           activeSeconds,
           idleSeconds,
           jabberSeconds,
-          wildixSeconds,
+          threeCxSeconds,
           yeastarSeconds,
           shiftDurationSeconds,
         });
@@ -397,7 +402,7 @@ export class TrackingService {
           isOnBreak: breakState.isOnBreak || (date === todayShift && isScheduledBreakTime(now)),
           breakSeconds,
           shiftDurationSeconds,
-          activeSeconds, idleSeconds, jabberSeconds, wildixSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+          activeSeconds, idleSeconds, jabberSeconds, threeCxSeconds, yeastarSeconds, cameraActiveSeconds: 0,
           hasActivitySnapshot: !!idle,
           productivityPercentage: metrics.overallProductivityPercentage,
           status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,

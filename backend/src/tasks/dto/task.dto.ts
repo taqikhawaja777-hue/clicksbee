@@ -5,6 +5,8 @@ import {
   IsOptional,
   IsString,
   IsInt,
+  IsObject,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -68,6 +70,35 @@ export class CreateTaskDto {
   @IsString()
   @IsOptional()
   attachmentName?: string;
+
+  @ApiPropertyOptional({ description: 'sheetId returned by POST /tasks/sheets - a fill-in spreadsheet for the assignee' })
+  @IsString()
+  @IsOptional()
+  sheetId?: string;
+}
+
+export class SaveSheetResponsesDto {
+  @ApiProperty({
+    description: 'Changed rows only, keyed "sheetIndex:rowIndex"',
+    example: { '0:3': { response: 'Responded', remarks: 'Wants a call back on Monday' } },
+  })
+  @IsObject()
+  responses: Record<string, { response?: string | null; remarks?: string | null } | null>;
+}
+
+export class SubmitSheetDto {
+  @ApiPropertyOptional({ description: 'Unsaved changed rows to save before sending' })
+  @IsObject()
+  @IsOptional()
+  responses?: Record<string, { response?: string | null; remarks?: string | null } | null>;
+}
+
+export class ReopenSheetDto {
+  @ApiPropertyOptional({ example: 'Please add remarks for the call-back rows' })
+  @IsString()
+  @MaxLength(500)
+  @IsOptional()
+  note?: string;
 }
 
 export class TaskReplyDto {

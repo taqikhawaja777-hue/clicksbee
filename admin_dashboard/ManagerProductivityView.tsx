@@ -158,7 +158,7 @@ export const ManagerProductivityView: React.FC = () => {
             <div className="p-6 rounded-3xl border shadow-sm bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800">
               <p className="text-xs font-medium text-slate-400">App Focus Score</p>
               <h4 className="text-3xl font-extrabold text-cyan-500 mt-2">{summary.appFocusScore}%</h4>
-              <p className="text-xs text-slate-400 mt-1">(Jabber + Wildix + Yeastar) ÷ Combined Active</p>
+              <p className="text-xs text-slate-400 mt-1">(Jabber + 3CX + Yeastar) ÷ Combined Active</p>
             </div>
 
             <div className="p-6 rounded-3xl border shadow-sm bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800">
@@ -182,8 +182,8 @@ export const ManagerProductivityView: React.FC = () => {
                 <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.jabberSeconds)}</p>
               </div>
               <div>
-                <p className="text-slate-400">Wildix</p>
-                <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.wildixSeconds)}</p>
+                <p className="text-slate-400">3CX</p>
+                <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.threeCxSeconds)}</p>
               </div>
               <div>
                 <p className="text-slate-400">Yeastar Linkus Lite</p>

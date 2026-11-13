@@ -30,7 +30,7 @@ import { mongoTrackingApiService, ShiftSummary } from '../services/mongoTracking
 const POLL_INTERVAL_MS = 5000;
 const TICK_INTERVAL_MS = 1000;
 
-const TICKING_STATUSES = new Set(['ACTIVE', 'ACTIVE_JABBER', 'ACTIVE_WILDIX', 'ACTIVE_YEASTAR', 'IDLE', 'AWAY']);
+const TICKING_STATUSES = new Set(['ACTIVE', 'ACTIVE_JABBER', 'ACTIVE_3CX', 'ACTIVE_YEASTAR', 'IDLE', 'AWAY']);
 
 export interface UseShiftSummaryResult {
   summary: ShiftSummary | null;

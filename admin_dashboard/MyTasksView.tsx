@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ClipboardList, Inbox, CheckSquare, Calendar, Paperclip, Send, X, Reply, FileText } from 'lucide-react';
-import { apiService } from './src/services/api.service';
+import { apiService, TaskSheetSummary } from './src/services/api.service';
 import { useEmployee } from './EmployeeContext';
 import { AttachmentPreviewModal, AttachmentRef, ACCEPTED_DOC_TYPES } from './AttachmentPreviewModal';
 import { TaskDocuments, TaskReply } from './TaskDocuments';
+import { TaskSheetChip, TaskSheetWorkspace } from './TaskSheetWorkspace';
 
 type Priority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 
@@ -19,6 +20,7 @@ interface TaskItem {
   attachmentUrl?: string | null;
   attachmentName?: string | null;
   attachments?: TaskReply[];
+  sheets?: TaskSheetSummary[];
 }
 
 const priorityBadgeClasses: Record<Priority, string> = {
@@ -50,6 +52,7 @@ export const MyTasksView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [completingId, setCompletingId] = useState<string | null>(null);
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null);
+  const [sheetTaskId, setSheetTaskId] = useState<string | null>(null);
 
   const [replyingTaskId, setReplyingTaskId] = useState<string | null>(null);
   const [replyNote, setReplyNote] = useState('');
@@ -58,8 +61,8 @@ export const MyTasksView: React.FC = () => {
   const [replyError, setReplyError] = useState<string | null>(null);
   const replyFileInputRef = useRef<HTMLInputElement>(null);
 
-  const loadTasks = async () => {
-    setIsLoading(true);
+  const loadTasks = async (quiet = false) => {
+    if (!quiet) setIsLoading(true);
     setError(null);
     try {
       const result: any = await apiService.getTasks();
@@ -76,7 +79,16 @@ export const MyTasksView: React.FC = () => {
     loadTasks();
   }, []);
 
-  const handleComplete = async (taskId: string) => {
+  const handleComplete = async (task: TaskItem) => {
+    const sheet = task.sheets?.[0];
+    if (
+      sheet &&
+      sheet.status !== 'SUBMITTED' &&
+      !window.confirm(`You haven't sent "${sheet.fileName}" to your manager yet. Mark this task complete anyway?`)
+    ) {
+      return;
+    }
+    const taskId = task.id;
     setCompletingId(taskId);
     try {
       await apiService.completeTask(taskId);
@@ -201,6 +213,13 @@ export const MyTasksView: React.FC = () => {
                         briefLabel="Document from manager"
                         onOpen={setPreviewAttachment}
                       />
+                      {task.sheets?.[0] && (
+                        <TaskSheetChip
+                          sheet={task.sheets[0]}
+                          actionLabel={task.sheets[0].status === 'SUBMITTED' ? 'View spreadsheet' : 'Open & fill in'}
+                          onOpen={() => setSheetTaskId(task.id)}
+                        />
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
@@ -215,7 +234,7 @@ export const MyTasksView: React.FC = () => {
                         <span>Reply / Send file</span>
                       </button>
                       <button
-                        onClick={() => handleComplete(task.id)}
+                        onClick={() => handleComplete(task)}
                         disabled={completingId === task.id}
                         className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white font-semibold text-xs rounded-xl transition-all active:scale-95 cursor-pointer flex items-center space-x-1.5"
                       >
@@ -291,6 +310,9 @@ export const MyTasksView: React.FC = () => {
                     briefLabel="Document from manager"
                     onOpen={setPreviewAttachment}
                   />
+                  {task.sheets?.[0] && (
+                    <TaskSheetChip sheet={task.sheets[0]} actionLabel="View spreadsheet" onOpen={() => setSheetTaskId(task.id)} />
+                  )}
                 </div>
                 <span className="shrink-0 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400">
                   {task.status}
@@ -306,6 +328,14 @@ export const MyTasksView: React.FC = () => {
         onClose={() => setPreviewAttachment(null)}
         allowDownload={false}
       />
+
+      {sheetTaskId && (
+        <TaskSheetWorkspace
+          taskId={sheetTaskId}
+          onClose={() => setSheetTaskId(null)}
+          onChanged={() => loadTasks(true)}
+        />
+      )}
     </div>
   );
 };

@@ -189,7 +189,7 @@ pulled in. The "Task Session" panel's **Register Employee** step is where
 you set `jibbleMemberId` so sync can match time entries to that employee —
 without it, Jibble entries for that person have nowhere to land.
 
-### 6. Idle/active input tracking (Cisco Jabber / Wildix)
+### 6. Idle/active input tracking (Cisco Jabber / 3CX web dialer)
 
 Replaces the old screen-recording-based monitoring on the Manager
 Supervisor Portal. The Electron main-process tracker
@@ -203,17 +203,17 @@ polling `powerMonitor.getSystemIdleTime()` and the active window
 - `GET /api/idle-time/{employeeId}?startDate=...&endDate=...` — per-day
   history for the "Idle Time" sidebar page.
 - `GET /api/idle-time/summary` — today's per-employee status
-  (`ACTIVE_JABBER` / `ACTIVE_WILDIX` / `ACTIVE` / `IDLE` / `AWAY`), polled
+  (`ACTIVE_JABBER` / `ACTIVE_3CX` / `ACTIVE` / `IDLE` / `AWAY`), polled
   every 20s to drive the "Live Idle/Active Status" card on the Manager
   Supervisor Portal overview.
 
-**Known limitation**: neither Cisco Jabber's nor Wildix's call-status API
+**Known limitation**: neither Cisco Jabber's nor 3CX's call-status API
 is wired up (`checkOnCallStatus` in `idleTimeTracker.ts` is a stub that
 always returns `false`) — verifying the real integration needs a live
 install of each app, which wasn't available while building this. Until
 that's wired in, an employee idle at the keyboard during a call in either
 app still accumulates idle time rather than being counted as active. The
-Jabber/Wildix process-name signatures in that same file are also
+Jabber/3CX (browser window title "3CX Webclient") signatures in that same file are also
 best-effort and worth re-checking against a real install.
 
 ### 7. Camera-based presence detection (optional, consent-gated)

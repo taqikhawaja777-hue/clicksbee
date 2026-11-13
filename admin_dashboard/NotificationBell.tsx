@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Bell, ShieldAlert, CheckCircle2, Clock, Coffee, Camera, ClipboardList, MessageSquare, AlertTriangle } from 'lucide-react';
 import { apiService } from './src/services/api.service';
 import { socketService } from './src/services/socket.service';
+import { playAlertBeep } from './alertSound';
 
 interface NotificationItem {
   id: string;
@@ -10,6 +11,7 @@ interface NotificationItem {
   message: string;
   isRead: boolean;
   createdAt: string;
+  recipientType?: 'ADMIN' | 'EMPLOYEE';
 }
 
 const ICONS_BY_TYPE: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -69,7 +71,14 @@ export const NotificationBell: React.FC<{ isDarkMode: boolean }> = ({ isDarkMode
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState<NotificationItem | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 10_000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const refreshUnreadCount = useCallback(() => {
     apiService
@@ -98,6 +107,12 @@ export const NotificationBell: React.FC<{ isDarkMode: boolean }> = ({ isDarkMode
     const handleNew = (notification: NotificationItem) => {
       setUnreadCount((prev) => prev + 1);
       setNotifications((prev) => [notification, ...prev].slice(0, 20));
+      // Manager feed: an employee just went idle - beep and pop it up. (The
+      // employee's own copy is ignored here; their idle screen already beeped.)
+      if (notification.type === 'IDLE_ALERT' && notification.recipientType === 'ADMIN') {
+        playAlertBeep(2);
+        setToast(notification);
+      }
     };
     socketService.on('notification:new', handleNew);
 
@@ -146,6 +161,21 @@ export const NotificationBell: React.FC<{ isDarkMode: boolean }> = ({ isDarkMode
 
   return (
     <div className="relative" ref={containerRef}>
+      {toast && (
+        <div className="fixed top-5 right-5 z-[70] w-80 p-4 rounded-2xl shadow-2xl bg-white dark:bg-slate-900 border-2 border-amber-400 flex items-start gap-3">
+          <Clock className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-slate-800 dark:text-white">{toast.title}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{toast.message}</p>
+          </div>
+          <button
+            onClick={() => setToast(null)}
+            className="text-slate-400 hover:text-slate-700 dark:hover:text-white text-xs font-bold cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <button
         onClick={handleToggle}
         className={`p-2.5 rounded-full relative transition-colors ${

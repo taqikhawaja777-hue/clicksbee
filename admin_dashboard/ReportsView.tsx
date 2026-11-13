@@ -162,7 +162,7 @@ export const ReportsView: React.FC = () => {
       } else if (reportType === 'Productivity Report') {
         const { rows } = await mongoTrackingApiService.getProductivityReport(startDate, endDate);
         const present = rows.filter((r: DailyReportRow) => r.attendanceStatus === 'PRESENT');
-        headers = ['Employee Name', 'Date', 'Activity Tracking', 'Active', 'Idle', 'Productivity %', 'Cisco Jabber', 'Wildix', 'Yeastar Linkus Lite', 'Camera-Confirmed'];
+        headers = ['Employee Name', 'Date', 'Activity Tracking', 'Active', 'Idle', 'Productivity %', 'Cisco Jabber', '3CX', 'Yeastar Linkus Lite', 'Camera-Confirmed'];
         body = present.map((r: DailyReportRow) => [
           r.employeeName,
           r.date,
@@ -171,7 +171,7 @@ export const ReportsView: React.FC = () => {
           r.hasActivitySnapshot ? formatHM(r.idleSeconds) : '—',
           r.hasActivitySnapshot ? `${r.productivityPercentage}%` : '—',
           r.hasActivitySnapshot ? formatHM(r.jabberSeconds) : '—',
-          r.hasActivitySnapshot ? formatHM(r.wildixSeconds) : '—',
+          r.hasActivitySnapshot ? formatHM(r.threeCxSeconds) : '—',
           r.hasActivitySnapshot ? formatHM(r.yeastarSeconds) : '—',
           r.hasActivitySnapshot ? formatHM(r.cameraActiveSeconds) : '—',
         ]);

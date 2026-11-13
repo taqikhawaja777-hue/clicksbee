@@ -21,7 +21,7 @@ type MongoLiveStatus = {
 function mapIdleStatusToDirectoryStatus(status: string): 'Online' | 'Break' | 'Offline' {
   if (status === 'ON_BREAK') return 'Break';
   if (status === 'NOT_CHECKED_IN' || status === 'CHECKED_OUT') return 'Offline';
-  return 'Online'; // ACTIVE / ACTIVE_JABBER / ACTIVE_WILDIX / IDLE / AWAY - still on shift.
+  return 'Online'; // ACTIVE / ACTIVE_JABBER / ACTIVE_3CX / IDLE / AWAY - still on shift.
 }
 
 /**

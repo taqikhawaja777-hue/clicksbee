@@ -27,7 +27,7 @@ async function checkConsistency(startDate?: string, endDate?: string) {
     prisma.productivityRecord.findMany({ where: { date: { gte: start, lte: end } } }),
   ]);
 
-  const dialerAliases = ['jabber', 'ciscojabber', 'ciscocollabhost', 'wildix', 'x-bees', 'wixphone', 'yeastar', 'yeaster', 'linkus'];
+  const dialerAliases = ['jabber', 'ciscojabber', 'ciscocollabhost', '3cx', 'wildix', 'x-bees', 'wixphone', 'yeastar', 'yeaster', 'linkus'];
   const storedMap = new Map(storedRecords.map((r) => [`${r.userId}_${r.date}`, r]));
 
   let totalChecked = 0;

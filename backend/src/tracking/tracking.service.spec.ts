@@ -88,6 +88,17 @@ describe('TrackingService Performance & Batching', () => {
     expect(mockPrisma.user.findFirst).toHaveBeenCalledTimes(1);
   });
 
+  it('counts the 3CX web dialer (and legacy Wildix time) as dialer time', async () => {
+    const focus = { '3CX': 3000, Wildix: 600, 'cisco jabber': 480, Other: 900 };
+    mockPrisma.idleTimeLog.findUnique.mockResolvedValueOnce({
+      activeSeconds: 12780, idleSeconds: 4680, appFocusSeconds: focus, lastIsIdle: false, updatedAt: new Date('2026-10-26T12:00:00Z'),
+    });
+    const summary: any = await service.getShiftSummary('org-1', 'user-1', '2026-10-26');
+    expect(summary.threeCxSeconds).toBe(3600);
+    expect(summary.jabberSeconds).toBe(480);
+    expect(summary).not.toHaveProperty('wildixSeconds');
+  });
+
   it('upsertIdleSnapshot invalidates summary cache', async () => {
     await service.getShiftSummary('org-1', 'user-1', '2026-10-26');
     expect(mockRedis.set).toHaveBeenCalled();

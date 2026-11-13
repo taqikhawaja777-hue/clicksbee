@@ -22,7 +22,7 @@ export interface ProductivityCalculationInput {
   activeSeconds: number;
   idleSeconds: number;
   jabberSeconds?: number;
-  wildixSeconds?: number;
+  threeCxSeconds?: number;
   yeastarSeconds?: number;
   dialerSeconds?: number;
   shiftDurationSeconds: number;
@@ -143,11 +143,11 @@ export function computeProductivityMetrics(input: ProductivityCalculationInput):
   const shiftDurationSeconds = Math.max(0, Number(input.shiftDurationSeconds) || 0);
 
   const jabberSeconds = Math.max(0, Number(input.jabberSeconds) || 0);
-  const wildixSeconds = Math.max(0, Number(input.wildixSeconds) || 0);
+  const threeCxSeconds = Math.max(0, Number(input.threeCxSeconds) || 0);
   const yeastarSeconds = Math.max(0, Number(input.yeastarSeconds) || 0);
   const dialerSeconds = input.dialerSeconds !== undefined
     ? Math.max(0, Number(input.dialerSeconds) || 0)
-    : (jabberSeconds + wildixSeconds + yeastarSeconds);
+    : (jabberSeconds + threeCxSeconds + yeastarSeconds);
 
   // 1. App Focus Score:
   // App Focus = (Dialer Seconds / Combined Active Seconds) * 100
