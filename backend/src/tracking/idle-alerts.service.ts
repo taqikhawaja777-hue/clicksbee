@@ -3,11 +3,21 @@ import { NotificationRecipientType, NotificationType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { isScheduledBreakTime, isWithinShift } from '../common/utils/shift-day.util';
+import { hasFlexibleHours } from '../common/access/access.util';
 
-export type IdleEvent = 'IDLE_STARTED' | 'IDLE_ENDED';
+export type IdleEvent = 'IDLE_STARTED' | 'IDLE_ENDED' | 'NO_CALL_GAP' | 'SUSPICIOUS_ACTIVITY';
 
 export const IDLE_ALERT_TITLE = 'Idle Alert';
 export const BACK_FROM_IDLE_TITLE = 'Back from Idle';
+export const NO_CALL_TITLE = 'No Calls';
+export const SUSPICIOUS_TITLE = 'Suspicious Activity';
+
+const EVENT_META: Record<IdleEvent, { type: NotificationType; title: string }> = {
+  IDLE_STARTED: { type: NotificationType.IDLE_ALERT, title: IDLE_ALERT_TITLE },
+  IDLE_ENDED: { type: NotificationType.IDLE_ALERT, title: BACK_FROM_IDLE_TITLE },
+  NO_CALL_GAP: { type: NotificationType.NO_CALL_ALERT, title: NO_CALL_TITLE },
+  SUSPICIOUS_ACTIVITY: { type: NotificationType.SUSPICIOUS_ACTIVITY, title: SUSPICIOUS_TITLE },
+};
 const DUPLICATE_WINDOW_MS = 90_000;
 const MAX_EVENT_AGE_MS = 12 * 60 * 60 * 1000;
 
@@ -40,7 +50,7 @@ export class IdleAlertsService {
   async recordIdleEvent(
     userId: string,
     organizationId: string,
-    input: { event: IdleEvent; idleSince: string; endedAt?: string },
+    input: { event: IdleEvent; idleSince: string; endedAt?: string; reason?: string },
     now: Date = new Date(),
   ) {
     const since = new Date(input.idleSince);
@@ -50,15 +60,23 @@ export class IdleAlertsService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { firstName: true, lastName: true, organizationId: true },
+      select: { firstName: true, lastName: true, organizationId: true, role: true, designation: true, officeCategory: true },
     });
     if (!user || user.organizationId !== organizationId) throw new NotFoundException('User not found');
     const name = `${user.firstName} ${user.lastName}`.trim();
 
-    const title = input.event === 'IDLE_STARTED' ? IDLE_ALERT_TITLE : BACK_FROM_IDLE_TITLE;
+    const { type, title } = EVENT_META[input.event];
+
+    // Close this idle period in the Idle Alert Report (before the duplicate check - retries are harmless).
+    if (input.event === 'IDLE_ENDED') {
+      const parsed = input.endedAt ? new Date(input.endedAt) : now;
+      const endedAt = Number.isNaN(parsed.getTime()) || parsed > now || parsed < since ? now : parsed;
+      await this.prisma.idleEpisode.updateMany({ where: { userId, idleSince: since }, data: { endedAt } });
+    }
 
     // Breaks and off-shift time are never idle (same rule as the desktop tracker).
-    if (input.event === 'IDLE_STARTED' && (!isWithinShift(now) || isScheduledBreakTime(now))) {
+    // Back Office / Validator have no duty hours - their alerts work any time of day.
+    if (input.event !== 'IDLE_ENDED' && !hasFlexibleHours(user) && (!isWithinShift(now) || isScheduledBreakTime(now))) {
       return { recorded: false, reason: 'Outside working time or during a scheduled break' };
     }
 
@@ -68,7 +86,7 @@ export class IdleAlertsService {
         organizationId,
         userId,
         recipientType: NotificationRecipientType.EMPLOYEE,
-        type: NotificationType.IDLE_ALERT,
+        type,
         title,
         createdAt: { gte: new Date(now.getTime() - DUPLICATE_WINDOW_MS) },
       },
@@ -78,6 +96,39 @@ export class IdleAlertsService {
 
     const startTime = formatKarachiTime(since);
     const metadata = { event: input.event, idleSince: since.toISOString() };
+
+    if (input.event === 'NO_CALL_GAP' || input.event === 'SUSPICIOUS_ACTIVITY') {
+      const reason = (input.reason || '').trim().slice(0, 200);
+      const minutes = formatIdleDuration(now.getTime() - since.getTime());
+      const [adminMessage, employeeMessage] =
+        input.event === 'NO_CALL_GAP'
+          ? [
+              `${name} has not been on a call since ${startTime} (${minutes})`,
+              `No call since ${startTime} (${minutes})`,
+            ]
+          : [
+              `${name}: unusual activity since ${startTime}${reason ? ` - ${reason}` : ''}. Check their screenshots or camera.`,
+              `Unusual activity detected at ${startTime}${reason ? ` - ${reason}` : ''}`,
+            ];
+      await this.notificationsService.createSystemNotification({
+        organizationId,
+        recipientType: NotificationRecipientType.ADMIN,
+        type,
+        title,
+        message: adminMessage,
+        metadata: { ...metadata, userId, reason: reason || undefined },
+      });
+      await this.notificationsService.createSystemNotification({
+        organizationId,
+        recipientType: NotificationRecipientType.EMPLOYEE,
+        recipientUserId: userId,
+        type,
+        title,
+        message: employeeMessage,
+        metadata: { ...metadata, reason: reason || undefined },
+      });
+      return { recorded: true };
+    }
 
     if (input.event === 'IDLE_STARTED') {
       await this.notificationsService.createSystemNotification({
@@ -94,7 +145,7 @@ export class IdleAlertsService {
         recipientUserId: userId,
         type: NotificationType.IDLE_ALERT,
         title: IDLE_ALERT_TITLE,
-        message: `Went idle at ${startTime} - no mouse or keyboard activity for 2+ minutes`,
+        message: `Went idle at ${startTime}`,
         metadata,
       });
       return { recorded: true };

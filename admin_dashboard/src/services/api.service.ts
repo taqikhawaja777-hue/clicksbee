@@ -65,6 +65,147 @@ export interface TaskTicket {
   onTime: boolean | null;
 }
 
+export interface ActivityConfig {
+  unproductiveKeywords: string[];
+  isDefault: boolean;
+  defaults: string[];
+  teamIdleAlertMinutes?: number;
+  spreadsheetLimitMinutes?: number;
+}
+
+/** Access categories - must match backend/src/common/access/access.util.ts. */
+export type Category = 'ADMIN' | 'HR' | 'SM' | 'TEAM_LEAD' | 'BACK_OFFICE' | 'VALIDATOR' | 'CLOSER' | 'EMPLOYEE';
+export type Permission =
+  | 'screenshots.view'
+  | 'liveMonitor.view'
+  | 'camera.view'
+  | 'candidates.manage'
+  | 'users.manage'
+  | 'managerPortal'
+  | 'leads.assignAny'
+  | 'leads.assignTeam'
+  | 'productivity.all'
+  | 'productivity.team'
+  | 'dialer.reports'
+  | 'activityLogs.view'
+  | 'loginRecords.view'
+  | 'attendance.reports'
+  | 'org.settings';
+
+export const CATEGORY_LABELS: Record<Category, string> = {
+  ADMIN: 'Admin / Boss',
+  HR: 'HR',
+  SM: 'SM (Sales Manager)',
+  TEAM_LEAD: 'Team Lead',
+  BACK_OFFICE: 'Back Office',
+  VALIDATOR: 'Validator',
+  CLOSER: 'Closer',
+  EMPLOYEE: 'Employee (Sales)',
+};
+
+/** Tracked automatically from Windows sign-in, all day, no check-in. */
+export const AUTO_TRACKED_CATEGORIES: Category[] = ['TEAM_LEAD', 'BACK_OFFICE', 'VALIDATOR', 'CLOSER'];
+
+export interface UserAccessRow {
+  id: string;
+  name: string;
+  email: string;
+  category: Category;
+  categoryLabel: string;
+  categoryIsDerived: boolean;
+  teamLeadId: string | null;
+  teamLeadName: string | null;
+  isActive: boolean;
+  lastLoginAt: string | null;
+}
+
+export const LEAD_FIELDS = ['customerName', 'contact', 'address', 'offer', 'time', 'reference', 'customerResponse'] as const;
+export type LeadField = (typeof LEAD_FIELDS)[number];
+export type LeadRow = Record<LeadField, string> & { id: string; chatProofId: string | null };
+
+export interface LeadSheetSummary {
+  id: string;
+  title: string;
+  status: 'DRAFT' | 'SENT';
+  rowCount: number;
+  createdBy: string;
+  createdByName: string;
+  closerId: string | null;
+  closerName: string | null;
+  sentAt: string | null;
+  updatedAt: string;
+  mine: boolean;
+}
+
+export interface LeadSheet extends Omit<LeadSheetSummary, 'rowCount' | 'mine'> {
+  rows: LeadRow[];
+  /** Agent while draft; the recipient once sent; Admin always. */
+  canEdit: boolean;
+  canSend: boolean;
+  canDelete: boolean;
+  /** Admin/Boss only. */
+  canDownload: boolean;
+}
+
+export interface LeadRecipient {
+  id: string;
+  name: string;
+  roleLabel: string;
+}
+
+export type IdleCameraStatus = 'PRESENT' | 'AWAY' | 'OFF';
+
+export interface IdleReportEpisode {
+  id: string;
+  userId: string;
+  employeeName: string;
+  idleSince: string;
+  endedAt: string;
+  stillOpen: boolean;
+  idleSeconds: number;
+  summary: string;
+  captures: {
+    capturedAt: string;
+    cameraStatus: IdleCameraStatus;
+    summary: string | null;
+    screenshot: string | null;
+    camera: string | null;
+  }[];
+}
+
+export interface IdleReport {
+  from: string;
+  to: string;
+  imagesLimited: boolean;
+  episodes: IdleReportEpisode[];
+}
+
+export interface ActivityLogDay {
+  person: { id: string; name: string; category: Category; categoryLabel: string };
+  date: string;
+  summary: {
+    activeSeconds: number;
+    idleSeconds: number;
+    firstActivityAt: string | null;
+    lastActivityAt: string | null;
+    apps: { app: string; activeSeconds: number; idleSeconds: number; sessions: number }[];
+  };
+  entries: { applicationName: string; windowTitle: string | null; startedAt: string; endedAt: string; duration: number; category: string }[];
+}
+
+export interface Candidate {
+  id: string;
+  fullName: string;
+  phone: string | null;
+  email: string | null;
+  position: string | null;
+  status: 'NEW' | 'INTERVIEW' | 'HIRED' | 'REJECTED';
+  notes: string | null;
+  cvFileName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Fill-in spreadsheet attached to a task. */
 export type TaskSheetStatus = 'DRAFT' | 'SUBMITTED';
 
@@ -158,6 +299,8 @@ class ApiService {
         // API call to hit a 401.
         this.scheduleProactiveRefresh(Math.round((expiresAt - Date.now()) / 1000));
       }
+      // App restart with a remembered session: hand the token to the background process too.
+      if (this.token) setTimeout(() => this.shareTokenWithBackgroundProcess(), 0);
     }
   }
 
@@ -182,6 +325,19 @@ class ApiService {
       localStorage.setItem(EXPIRES_AT_KEY, String(Date.now() + expiresIn * 1000));
     }
     this.scheduleProactiveRefresh(expiresIn);
+    this.shareTokenWithBackgroundProcess();
+  }
+
+  /**
+   * The Electron background process (idle tracker, activity log, screen
+   * analysis) uploads as the signed-in user with this same token.
+   */
+  shareTokenWithBackgroundProcess(): void {
+    try {
+      (window as any).require?.('electron')?.ipcRenderer?.invoke?.('auth-token-updated', this.token);
+    } catch {
+      // not running inside Electron
+    }
   }
 
   /**
@@ -210,6 +366,7 @@ class ApiService {
       localStorage.removeItem(REFRESH_TOKEN_KEY);
       localStorage.removeItem(EXPIRES_AT_KEY);
     }
+    this.shareTokenWithBackgroundProcess();
   }
 
   /**
@@ -346,6 +503,29 @@ class ApiService {
     }
   }
 
+  /**
+   * fetch() with the login token (and one silent refresh on 401) for calls
+   * that need the raw Response - file downloads, or code that reads
+   * res.ok/res.json() itself. Accepts an API path ("/employees") or a full
+   * URL on the API origin. Every data endpoint requires a login now.
+   */
+  async authFetch(pathOrUrl: string, init: RequestInit = {}, isRetry = false): Promise<Response> {
+    const url = /^https?:\/\//i.test(pathOrUrl)
+      ? pathOrUrl
+      : pathOrUrl.startsWith('/api/')
+      ? `${API_ORIGIN}${pathOrUrl}`
+      : `${this.baseUrl}${pathOrUrl}`;
+    const headers = new Headers(init.headers || {});
+    if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
+    const response = await fetch(url, { ...init, headers });
+    if (response.status === 401 && !isRetry && this.refreshToken) {
+      await this.refreshAccessToken();
+      return this.authFetch(pathOrUrl, init, true);
+    }
+    if (response.status === 401) this.handleSessionExpired();
+    return response;
+  }
+
   // Convenience methods
   async get<T>(path: string): Promise<T> {
     return this.request<T>('GET', path);
@@ -441,8 +621,153 @@ class ApiService {
   }
 
   /** Employee app: went idle (2+ min, no input) or came back - backend notifies the manager and logs it. */
-  async reportIdleEvent(body: { event: 'IDLE_STARTED' | 'IDLE_ENDED'; idleSince: string; endedAt?: string }) {
+  async reportIdleEvent(body: {
+    event: 'IDLE_STARTED' | 'IDLE_ENDED' | 'NO_CALL_GAP' | 'SUSPICIOUS_ACTIVITY';
+    idleSince: string;
+    endedAt?: string;
+    reason?: string;
+  }) {
     return this.post('/tracking/idle-events', body);
+  }
+
+  // ---- Idle Alert Report (capture: employee app while idle; report: Admin) ----
+  async recordIdleCapture(body: {
+    idleSince: string;
+    capturedAt: string;
+    screenshot: string;
+    camera?: string;
+    cameraStatus: IdleCameraStatus;
+  }) {
+    return this.post('/idle-reports/capture', body);
+  }
+
+  async getIdleReport(from: string, to: string) {
+    return this.get<{ data: IdleReport }>(`/idle-reports?from=${from}&to=${to}`);
+  }
+
+  /** Fresh profile incl. access category + permissions (Admin may have changed them). */
+  async getMe() {
+    return this.get<{ data: any }>('/auth/me');
+  }
+
+  // ---- Users page (Admin/Boss) ----
+  async getUsersAccess() {
+    return this.get<{ data: UserAccessRow[] }>('/admin/users');
+  }
+
+  async updateUserAccess(userId: string, changes: { category?: Category; teamLeadId?: string | null }) {
+    return this.patch<{ data: UserAccessRow }>(`/admin/users/${userId}`, changes);
+  }
+
+  // ---- Full-day activity log (Admin: all; SM: Team Leads + Closers; Team Lead: own agents) ----
+  async getActivityLogPeople() {
+    return this.get<{ data: { id: string; name: string; email: string; category: Category; categoryLabel: string }[] }>('/activity-log/people');
+  }
+
+  async getActivityLog(userId: string, date: string) {
+    return this.get<{ data: ActivityLogDay }>(`/activity-log?userId=${encodeURIComponent(userId)}&date=${date}`);
+  }
+
+  // ---- Team Lead ----
+  // ---- Lead sheets (employee -> closer, in-app only) ----
+  async getLeadSheets() {
+    return this.get<{ data: LeadSheetSummary[] }>('/lead-sheets');
+  }
+
+  /** Closers, Team Leads and Back Office - who an agent can send a sheet to. */
+  async getLeadRecipients() {
+    return this.get<{ data: LeadRecipient[] }>('/lead-sheets/recipients');
+  }
+
+  /** Admin/Boss only (the backend refuses everyone else). */
+  async downloadLeadSheet(id: string): Promise<{ blob: Blob; fileName: string }> {
+    const response = await this.authFetch(`/lead-sheets/${id}/download`);
+    if (!response.ok) throw new Error(`API Error ${response.status}: ${await response.text()}`);
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+    const plain = /filename="([^"]+)"/i.exec(disposition)?.[1];
+    return { blob: await response.blob(), fileName: encoded ? decodeURIComponent(encoded) : plain || 'lead-sheet.xlsx' };
+  }
+
+  async createLeadSheet(title: string) {
+    return this.post<{ data: LeadSheet }>('/lead-sheets', { title });
+  }
+
+  async getLeadSheet(id: string) {
+    return this.get<{ data: LeadSheet }>(`/lead-sheets/${id}`);
+  }
+
+  async updateLeadSheet(id: string, changes: { title?: string; rows?: LeadRow[] }) {
+    return this.put<{ data: LeadSheet }>(`/lead-sheets/${id}`, changes);
+  }
+
+  async deleteLeadSheet(id: string) {
+    return this.delete(`/lead-sheets/${id}`);
+  }
+
+  async sendLeadSheet(id: string, closerId: string) {
+    return this.post<{ data: LeadSheet }>(`/lead-sheets/${id}/send`, { closerId });
+  }
+
+  async addLeadChatProof(id: string, image: string) {
+    return this.post<{ data: { chatProofId: string } }>(`/lead-sheets/${id}/proofs`, { image });
+  }
+
+  async getLeadChatProof(id: string, proofId: string) {
+    return this.get<{ data: { image: string } }>(`/lead-sheets/${id}/proofs/${proofId}`);
+  }
+
+  async getMyTeam() {
+    return this.get<{ data: { id: string; name: string; email: string; category: Category; categoryLabel: string }[] }>('/team/members');
+  }
+
+  // ---- Candidates (HR, Admin/Boss) ----
+  async getCandidates() {
+    return this.get<{ data: Candidate[] }>('/candidates');
+  }
+
+  async createCandidate(body: Partial<Candidate> & { fullName: string }) {
+    return this.post<{ data: Candidate }>('/candidates', body);
+  }
+
+  async updateCandidate(id: string, body: Partial<Candidate>) {
+    return this.patch<{ data: Candidate }>(`/candidates/${id}`, body);
+  }
+
+  async deleteCandidate(id: string) {
+    return this.delete(`/candidates/${id}`);
+  }
+
+  async uploadCandidateCv(id: string, file: File) {
+    return this.uploadFile<Candidate>(`/candidates/${id}/cv`, file);
+  }
+
+  async downloadCandidateCv(id: string): Promise<{ blob: Blob; fileName: string }> {
+    const res = await this.authFetch(`/candidates/${id}/cv`);
+    if (!res.ok) throw new Error(`API Error ${res.status}: ${await res.text()}`);
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+    return { blob: await res.blob(), fileName: encoded ? decodeURIComponent(encoded) : 'cv' };
+  }
+
+  /** Organization's unproductive apps/sites list (built-in defaults until a manager saves one). */
+  async getActivityConfig() {
+    return this.get<{ data: ActivityConfig }>('/tracking/activity-config');
+  }
+
+  /** Manager/admin: save the list; null resets to the defaults. */
+  async setActivityConfig(unproductiveKeywords: string[] | null) {
+    return this.put<{ data: ActivityConfig }>('/tracking/activity-config', { unproductiveKeywords });
+  }
+
+  /** Admin: minutes an agent may be idle before their Team Lead is alerted (default 10). */
+  async setTeamIdleAlertMinutes(minutes: number) {
+    return this.put<{ data: ActivityConfig }>('/tracking/activity-config', { teamIdleAlertMinutes: minutes });
+  }
+
+  /** Admin: spreadsheet minutes per shift before Admin is notified (default 60). */
+  async setSpreadsheetLimitMinutes(minutes: number) {
+    return this.put<{ data: ActivityConfig }>('/tracking/activity-config', { spreadsheetLimitMinutes: minutes });
   }
 
   /** Upload a fill-in spreadsheet (manager) - pass the returned sheetId to createTask. */

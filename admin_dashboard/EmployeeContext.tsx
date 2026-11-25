@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { apiService, API_ORIGIN } from './src/services/api.service';
+import { apiService, API_ORIGIN, Category, Permission } from './src/services/api.service';
+
+const OFFICE_CATEGORIES: Category[] = ['SM', 'TEAM_LEAD', 'BACK_OFFICE', 'VALIDATOR', 'CLOSER'];
 import { socketService } from './src/services/socket.service';
 import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
 import { useShiftSummary } from './src/hooks/useShiftSummary';
@@ -89,6 +91,33 @@ export interface UserProfile {
   // the SM/HR-only Idle Time nav item - see dashboard.tsx.
   designation?: string;
   avatar: string;
+  // Access category + permissions from the server (backend access.util.ts) -
+  // decide the menu. Missing on a profile saved by an older app version until
+  // refreshProfile() runs.
+  category?: Category;
+  categoryLabel?: string;
+  permissions?: Permission[];
+}
+
+export type SignupCategory = 'EMPLOYEE' | 'OFFICE' | 'MANAGER';
+
+/** Profile from a /auth/login or /auth/me user object. */
+function profileFromServer(u: any, fallbackEmail: string): UserProfile {
+  const fullName = `${u.firstName || ''} ${u.lastName || ''}`.trim() || fallbackEmail.split('@')[0];
+  const category: Category | undefined = u.category;
+  // Manager portal = Admin/Boss and HR; everyone else (incl. SM, Team Lead) uses the employee-side portal.
+  const managerPortal = category ? category === 'ADMIN' || category === 'HR' : u.role === 'ADMIN' || u.role === 'MANAGER';
+  return {
+    id: u.id,
+    name: fullName,
+    email: u.email,
+    role: managerPortal ? 'MANAGER' : 'EMPLOYEE',
+    designation: u.designation || undefined,
+    avatar: getInitials(fullName),
+    category,
+    categoryLabel: u.categoryLabel,
+    permissions: Array.isArray(u.permissions) ? u.permissions : [],
+  };
 }
 
 export interface SessionState {
@@ -192,8 +221,20 @@ export interface EmployeeContextType {
   // Actions
   handleCheckIn: () => void;
   handleCheckOut: () => void;
-  registerNewEmployee: (firstName: string, lastName: string, email: string, role: 'EMPLOYEE' | 'MANAGER', password?: string, department?: string, designation?: string) => Promise<void>;
-  loginEmployee: (email: string, password?: string, requestedRole?: 'EMPLOYEE' | 'MANAGER') => Promise<boolean>;
+  registerNewEmployee: (
+    firstName: string,
+    lastName: string,
+    email: string,
+    signupCategory: SignupCategory,
+    password?: string,
+    department?: string,
+    designation?: string,
+    officeCategory?: Category,
+    signupKey?: string,
+  ) => Promise<void>;
+  loginEmployee: (email: string, password?: string, requestedPortal?: SignupCategory) => Promise<boolean>;
+  /** Re-reads category/permissions from the server (Admin may have changed them). */
+  refreshProfile: () => Promise<void>;
 }
 
 // Maps the backend's richer shift/idle status enum down into this
@@ -821,18 +862,23 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => clearInterval(interval);
   }, [productivityEmployeeId]);
 
-  // Register New Employee or Manager
+  // Register: Employee (sales), Office (SM / Team Lead / Back Office /
+  // Validator / Closer, key-protected) or Manager (HR, key-protected). The
+  // server decides the access - the keys are checked there, not here.
   const registerNewEmployee = async (
     firstName: string,
     lastName: string,
     email: string,
-    role: 'EMPLOYEE' | 'MANAGER' = 'EMPLOYEE',
+    signupCategory: SignupCategory = 'EMPLOYEE',
     password: string = 'Taqu7777',
     department?: string,
-    designation?: string
+    designation?: string,
+    officeCategory?: Category,
+    signupKey?: string,
   ) => {
     const cleanFirstName = firstName.trim();
     const cleanLastName = lastName.trim();
+    const role: 'EMPLOYEE' | 'MANAGER' = signupCategory === 'MANAGER' ? 'MANAGER' : 'EMPLOYEE';
 
     const res = await fetch(`${API_ORIGIN}/api/v1/auth/register`, {
       method: 'POST',
@@ -843,9 +889,11 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         email: email.toLowerCase().trim(),
         password,
         organizationName: 'StitchMonitor Corp',
-        role: role === 'MANAGER' ? 'ADMIN' : 'EMPLOYEE',
+        category: signupCategory,
+        officeCategory: signupCategory === 'OFFICE' ? officeCategory : undefined,
+        signupKey: signupCategory === 'EMPLOYEE' ? undefined : signupKey,
         departmentName: department,
-        designation: designation || undefined,
+        designation: signupCategory === 'EMPLOYEE' ? designation || undefined : undefined,
       }),
     });
 
@@ -861,11 +909,25 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     safeSetEmployeeState(newBaseline);
   };
 
-  // Login Employee or Manager
+  /** Re-read category + permissions (Admin may have changed them on the Users page). */
+  const refreshProfile = async () => {
+    try {
+      const res: any = await apiService.getMe();
+      const u = res?.data ?? res;
+      if (!u?.id) return;
+      const fresh = profileFromServer(u, u.email || '');
+      setState((prev: typeof state) => ({ ...prev, user: { ...prev.user, ...fresh } }));
+    } catch (err) {
+      console.warn('[EmployeeContext] Could not refresh the profile:', err);
+    }
+  };
+
+  // Login. Manager tab: Admin/Boss and HR only. Office tab: Office roles only.
+  // Employee tab: any non-manager account (the portal follows the account's category).
   const loginEmployee = async (
-    email: string, 
-    password: string = 'Taqu7777', 
-    requestedRole: 'EMPLOYEE' | 'MANAGER' = 'EMPLOYEE'
+    email: string,
+    password: string = 'Taqu7777',
+    requestedPortal: SignupCategory = 'EMPLOYEE'
   ): Promise<boolean> => {
     const cleanEmail = email.toLowerCase().trim();
 
@@ -910,21 +972,20 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         socketService.reauthenticate();
       }
 
-      const canAccessManagerDashboard = u.role === 'ADMIN' || u.role === 'MANAGER';
-      if (requestedRole === 'MANAGER' && !canAccessManagerDashboard) {
-        throw new Error('Only authorized Manager accounts can access the Manager Dashboard.');
+      const fetchedUser = profileFromServer(u, cleanEmail);
+      const isOfficeAccount = !!fetchedUser.category && OFFICE_CATEGORIES.includes(fetchedUser.category);
+      if (requestedPortal === 'MANAGER' && fetchedUser.role !== 'MANAGER') {
+        apiService.clearToken();
+        throw new Error('Only Admin/Boss and HR accounts can sign in here.');
       }
-
-      const fullName = `${u.firstName || ''} ${u.lastName || ''}`.trim() || cleanEmail.split('@')[0];
-      const isManagerAccount = canAccessManagerDashboard;
-      const fetchedUser: UserProfile = {
-        id: u.id,
-        name: fullName,
-        email: u.email,
-        role: isManagerAccount ? 'MANAGER' : 'EMPLOYEE',
-        designation: u.designation || undefined,
-        avatar: getInitials(fullName),
-      };
+      if (requestedPortal === 'OFFICE' && !isOfficeAccount) {
+        apiService.clearToken();
+        throw new Error('This is not an Office account - use the Employee or Manager tab.');
+      }
+      if (requestedPortal === 'EMPLOYEE' && fetchedUser.role === 'MANAGER') {
+        apiService.clearToken();
+        throw new Error('This is a Manager account - use the Manager tab.');
+      }
 
       setState((prev: typeof state) => ({
         ...prev,
@@ -956,6 +1017,7 @@ export const EmployeeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         handleCheckOut,
         registerNewEmployee,
         loginEmployee,
+        refreshProfile,
       }}
     >
       {children}

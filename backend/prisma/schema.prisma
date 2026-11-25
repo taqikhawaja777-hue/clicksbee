@@ -86,6 +86,8 @@ enum NotificationType {
   CHECK_IN
   CHECK_OUT
   IDLE_ALERT
+  SPREADSHEET_LIMIT
+  LEAD_SHEET_RECEIVED
   LATE_BREAK_RETURN
   WASHROOM_LIMIT
   CAMERA_ANOMALY
@@ -93,6 +95,9 @@ enum NotificationType {
   TASK_OVERDUE
   MANUAL_MESSAGE
   TASK_REPLY
+  NO_CALL_ALERT
+  SUSPICIOUS_ACTIVITY
+  AGENT_IDLE_ALERT
 }
 
 // ADMIN: visible to every ADMIN/MANAGER in the organization (a shared
@@ -134,6 +139,9 @@ model Organization {
   // reads this at login, so it is configured once, not per machine.
   screenshotServerIp   String?
   screenshotServerPort Int?
+  // Activity tracking settings: { unproductiveKeywords: string[] }. Null =
+  // built-in defaults (see tracking/activity-config.util.ts).
+  activityConfig       Json?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -176,6 +184,11 @@ model User {
   // the signup form (AuthScreen.tsx's DESIGNATION_OPTIONS), same
   // no-separate-management-UI approach as departmentName above.
   designation    String?
+  // Access category - decides every permission (common/access/access.util.ts):
+  // ADMIN (= Boss) | HR | SM | TEAM_LEAD | BACK_OFFICE | VALIDATOR | CLOSER |
+  // EMPLOYEE (sales). Null on accounts created before categories existed -
+  // derived from role + designation for those (categoryOf()).
+  officeCategory String?
   avatar         String?
   isActive       Boolean   @default(true)
   lastLoginAt    DateTime?
@@ -480,6 +493,15 @@ model IdleTimeLog {
   appFocusSeconds Json     @default("{}")
   lastActiveApp   String?
   lastIsIdle      Boolean  @default(false)
+  // Desktop activity classifier (activityClassifier.ts): callSeconds,
+  // callCount, dialingSeconds, otherWorkSeconds, unproductiveSeconds,
+  // suspiciousSeconds, longestNoCallGapSeconds. Null on older app versions.
+  activityBreakdown Json?
+  // ON_CALL | DIALING | OTHER_WORK | UNPRODUCTIVE | IDLE | SUSPICIOUS at the last poll
+  lastState       String?
+  // Start of the current idle episode (last input) while lastState is IDLE -
+  // drives the Team Lead "agent idle too long" alert.
+  idleSince       DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -488,6 +510,8 @@ model IdleTimeLog {
 
   @@unique([userId, date])
   @@index([organizationId, date])
+  // Team Lead idle alert job reads today's idle agents every minute.
+  @@index([date, lastState])
 }
 
 model MonitoringPolicy {
@@ -641,6 +665,28 @@ model TaskAttachment {
   @@index([organizationId])
 }
 
+// Recruitment (HR and Admin/Boss only - CandidatesController). The CV is
+// stored here, not on Render's disk (wiped on every deploy).
+model Candidate {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String   @db.ObjectId
+  fullName       String
+  phone          String?
+  email          String?
+  position       String?
+  // NEW | INTERVIEW | HIRED | REJECTED
+  status         String   @default("NEW")
+  notes          String?
+  cvFileName     String?
+  cvMimeType     String?
+  cvFile         Bytes?
+  createdBy      String   @db.ObjectId
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId, createdAt])
+}
+
 enum TaskSheetStatus {
   DRAFT
   SUBMITTED
@@ -778,4 +824,74 @@ model License {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
+}
+
+// Idle Alert Report (Admin only - IdleReportsController). While an employee
+// is idle the desktop app sends one capture a minute: a small screenshot
+// (its AI summary comes from the Live Monitor analysis) and, when camera
+// presence is active, a small camera picture. Deleted after 30 days.
+model IdleEpisode {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String        @db.ObjectId
+  userId         String        @db.ObjectId
+  idleSince      DateTime
+  // Set when the employee comes back (IDLE_ENDED); null if it closed for a break/sign-out.
+  endedAt        DateTime?
+  // After it ends, only the first/middle/last captures keep their pictures (IdleReportsService.pruneImages).
+  imagesPruned   Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  captures       IdleCapture[]
+
+  @@unique([userId, idleSince])
+  @@index([organizationId, idleSince])
+}
+
+model IdleCapture {
+  id           String      @id @default(auto()) @map("_id") @db.ObjectId
+  episodeId    String      @db.ObjectId
+  episode      IdleEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  capturedAt   DateTime
+  screenshot   Bytes?
+  camera       Bytes?
+  // PRESENT (face seen) | AWAY (camera on, no face) | OFF (camera presence not active)
+  cameraStatus String      @default("OFF")
+  summary      String?
+  createdAt    DateTime    @default(now())
+
+  @@index([episodeId, capturedAt])
+}
+
+// Lead sheets (LeadSheetsController): an employee fills customer rows
+// (name, contact, maps address, offer, time, reference, chat-proof
+// screenshot, response) and sends the sheet to one Closer. View in the app
+// only - there is no download/export route.
+model LeadSheet {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  organizationId String    @db.ObjectId
+  createdBy      String    @db.ObjectId
+  closerId       String?   @db.ObjectId
+  title          String
+  // DRAFT (creator edits) | SENT (read-only for everyone)
+  status         String    @default("DRAFT")
+  // [{ id, customerName, contact, address, offer, time, reference, customerResponse, chatProofId }]
+  rows           Json
+  // Kept with the rows so the list never has to load them just to count.
+  rowCount       Int?
+  sentAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([organizationId, createdBy])
+  @@index([organizationId, closerId])
+}
+
+model LeadChatProof {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  sheetId    String   @db.ObjectId
+  uploadedBy String   @db.ObjectId
+  image      Bytes
+  createdAt  DateTime @default(now())
+
+  @@index([sheetId])
 }

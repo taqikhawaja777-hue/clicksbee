@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Settings, Shield, Camera, Clock, Save, HardDrive, Wifi } from 'lucide-react';
 import { mongoTrackingApiService, Employee } from './src/services/mongoTrackingApi.service';
 import { apiService } from './src/services/api.service';
+import { UnproductiveAppsSettings } from './UnproductiveAppsSettings';
+import { SpreadsheetLimitSettings } from './SpreadsheetLimitSettings';
 
 export const ManagerSettingsView: React.FC = () => {
   const [screenshotInterval, setScreenshotInterval] = useState<number>(10);
@@ -374,6 +376,9 @@ export const ManagerSettingsView: React.FC = () => {
           </>
         )}
       </div>
+
+      <UnproductiveAppsSettings />
+      <SpreadsheetLimitSettings />
 
       {/* Camera Presence Monitoring — real backend-backed toggles, saved
           immediately on change (unlike the mock fields in the form above) */}

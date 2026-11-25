@@ -25,7 +25,12 @@ import {
   CheckSquare,
   ClipboardList,
   PlusCircle,
-  History
+  History,
+  ShieldCheck,
+  UserCog,
+  Briefcase,
+  AppWindow,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { ThisMonthWidget } from './ThisMonthWidget';
 import { AttendanceActionCards } from './AttendanceActionCards';
@@ -54,8 +59,14 @@ import { TaskProductivityDashboard } from './TaskProductivityDashboard';
 import { CreateTaskPanel } from './CreateTaskPanel';
 import { MyTasksView } from './MyTasksView';
 import { IdleAlertWatcher } from './IdleAlertWatcher';
+import { LeadSheetsPanel } from './LeadSheetsPanel';
+import { UsersAdminView } from './UsersAdminView';
+import { ActivityLogsView } from './ActivityLogsView';
+import { CandidatesView } from './CandidatesView';
+import { TeamView } from './TeamView';
+import { TrackingStatusView } from './TrackingStatusView';
 import { useEmployee } from './EmployeeContext';
-import { apiService, API_ORIGIN } from './src/services/api.service';
+import { apiService, API_ORIGIN, AUTO_TRACKED_CATEGORIES, Category } from './src/services/api.service';
 import { productivityApiService } from './src/services/productivityApi.service';
 import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
 
@@ -63,6 +74,90 @@ import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service
 // service. Keep it disabled rather than repeatedly failing requests while
 // Attendance, Productivity and Idle Time run entirely from MongoDB.
 const LEGACY_CAMERA_SERVICE_ENABLED = false;
+
+type NavItem = { name: string; label?: string; icon: React.ComponentType<{ className?: string }>; badge?: string; badgeColor?: string };
+
+/**
+ * The menu for each access category. Sales employees (EMPLOYEE) keep the
+ * existing employee menu (returns null). Auto-tracked roles get a "Tracking"
+ * home instead of check-in pages.
+ */
+function buildCategoryNav(category?: Category): NavItem[] | null {
+  switch (category) {
+    case 'ADMIN':
+      return [
+        { name: 'Dashboard', icon: LayoutDashboard },
+        { name: 'Employees', icon: Users },
+        { name: 'Live Monitor', icon: Radio, badge: 'LIVE', badgeColor: 'bg-rose-500 text-white' },
+        { name: 'Attendance', icon: Clock },
+        { name: 'Productivity', icon: TrendingUp },
+        { name: 'Task Productivity', icon: ClipboardList },
+        { name: 'Create Task', icon: PlusCircle },
+        { name: 'Screenshots', icon: Camera },
+        { name: 'Idle Time', icon: Activity },
+        { name: 'Activity Logs', icon: AppWindow },
+        { name: 'Reports', icon: FileText },
+        { name: 'Logs', icon: History },
+        { name: 'Users', icon: UserCog },
+        { name: 'Lead Sheets', icon: FileSpreadsheet },
+        { name: 'Candidates', icon: Briefcase },
+        { name: 'Notifications', icon: Bell },
+        { name: 'Settings', icon: Settings },
+      ];
+    case 'HR':
+      // No screenshots, Live Monitor, camera, agent productivity or dialer reports.
+      return [
+        { name: 'Dashboard', icon: LayoutDashboard },
+        { name: 'Employees', icon: Users },
+        { name: 'Attendance', icon: Clock },
+        { name: 'Task Productivity', icon: ClipboardList },
+        { name: 'Create Task', icon: PlusCircle },
+        { name: 'Reports', icon: FileText },
+        { name: 'Logs', icon: History },
+        { name: 'Candidates', icon: Briefcase },
+        { name: 'Notifications', icon: Bell },
+      ];
+    case 'SM':
+      // Overall employee dashboard, dialer reports, agent productivity (no camera),
+      // TL/Closer activity logs, agent login records. No attendance / work session.
+      return [
+        { name: 'Dashboard', label: 'Team Overview', icon: LayoutDashboard },
+        { name: 'My Tasks', icon: CheckSquare },
+        { name: 'Idle Time', label: 'Agent Productivity', icon: Activity },
+        { name: 'Reports', label: 'Dialer & Productivity Reports', icon: FileText },
+        { name: 'Activity Logs', icon: AppWindow },
+        { name: 'Logs', label: 'Login Records', icon: History },
+        { name: 'Notifications', icon: Bell },
+      ];
+    case 'TEAM_LEAD':
+      return [
+        { name: 'Tracking', icon: ShieldCheck },
+        { name: 'My Team', icon: Users },
+        { name: 'Assign Leads', icon: PlusCircle },
+        { name: 'Activity Logs', icon: AppWindow },
+        { name: 'My Tasks', icon: CheckSquare },
+        { name: 'Notifications', icon: Bell },
+      ];
+    case 'BACK_OFFICE':
+    case 'VALIDATOR':
+      // Like a normal employee, not management - but no check-in/out or duty
+      // hours: attendance is recorded automatically at sign-in, any time.
+      return [
+        { name: 'Dashboard', icon: LayoutDashboard },
+        { name: 'My Tasks', icon: CheckSquare },
+        { name: 'Notifications', icon: Bell },
+      ];
+    case 'CLOSER':
+      // Not management: tracking only (plus their own tasks and messages).
+      return [
+        { name: 'Tracking', icon: ShieldCheck },
+        { name: 'My Tasks', icon: CheckSquare },
+        { name: 'Notifications', icon: Bell },
+      ];
+    default:
+      return null;
+  }
+}
 
 export const AdminDashboard: React.FC = () => {
   const {
@@ -74,6 +169,7 @@ export const AdminDashboard: React.FC = () => {
     handleCheckIn,
     handleCheckOut,
     setProductivityEmployeeId: setContextProductivityEmployeeId,
+    refreshProfile,
   } = useEmployee();
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -117,6 +213,39 @@ export const AdminDashboard: React.FC = () => {
     return () => window.removeEventListener('auth:unauthorized', handleSessionExpired);
   }, []);
   const [activeNav, setActiveNav] = useState<string>('Dashboard');
+
+  // Category + permissions can change (Admin's Users page) - re-read them
+  // from the server on every sign-in / app start.
+  useEffect(() => {
+    if (isAuthenticated) void refreshProfile();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
+  // Tell the background process who is signed in and their category: the
+  // auto-tracked roles get the full-day activity log, start-with-Windows,
+  // tray and restart watchdog (main.ts / backgroundMode.ts).
+  useEffect(() => {
+    const ipcRenderer = (window as any).require?.('electron')?.ipcRenderer;
+    ipcRenderer
+      ?.invoke?.('set-session-user', isAuthenticated && user.id && user.category ? { userId: user.id, category: user.category } : null)
+      .catch(() => undefined);
+  }, [isAuthenticated, user.id, user.category]);
+
+  // Back Office / Validator: no check-in - attendance is recorded automatically
+  // when they sign in, at any hour (the server allows it for them only).
+  useEffect(() => {
+    if (!isAuthenticated || (user.category !== 'BACK_OFFICE' && user.category !== 'VALIDATOR')) return;
+    apiService
+      .post('/attendance/clock-in', {})
+      .catch(() => undefined); // already present today
+  }, [isAuthenticated, user.category]);
+
+  // Open the category's home page if the current page isn't in its menu.
+  useEffect(() => {
+    const nav = buildCategoryNav(user.category);
+    if (nav && !nav.some((n) => n.name === activeNav)) setActiveNav(nav[0].name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.category]);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -156,6 +285,14 @@ export const AdminDashboard: React.FC = () => {
           // Store raw activity snapshots against the existing MongoDB user,
           // not the retired Supabase productivity-service employee record.
           await ipcRenderer.invoke('start-idle-time-tracking', { employeeId: user.id, apiBaseUrl: API_ORIGIN });
+          // Manager's unproductive apps/sites list (Settings) for the activity classifier.
+          try {
+            const res: any = await apiService.getActivityConfig();
+            const cfg = res?.data ?? res;
+            await ipcRenderer.invoke('set-activity-config', { unproductiveKeywords: cfg?.unproductiveKeywords ?? null });
+          } catch (err) {
+            console.warn('[ActivityConfig] Could not load unproductive apps list, using defaults:', err);
+          }
           // Point this machine's screenshot uploads at the org's manager PC
           // before the first capture fires (set-monitor-employee-context below).
           try {
@@ -370,7 +507,13 @@ export const AdminDashboard: React.FC = () => {
     return `${hrs}h ${mins}m`;
   };
 
-  const navItems = user.role === 'MANAGER'
+  // Menu per access category (server: access.util.ts; every page's data is
+  // also enforced there - hiding a menu item is not the protection).
+  const category = user.category;
+  const categoryNav = buildCategoryNav(category);
+  const navItems: NavItem[] = categoryNav
+    ? categoryNav
+    : user.role === 'MANAGER'
     ? [
         { name: 'Dashboard', icon: LayoutDashboard },
         { name: 'Employees', icon: Users },
@@ -412,6 +555,9 @@ export const AdminDashboard: React.FC = () => {
           ? [{ name: 'Settings', icon: Settings }]
           : []),
       ];
+  const allowedPage = (name: string) => navItems.some((n: NavItem) => n.name === name);
+  const isAutoTracked = !!category && AUTO_TRACKED_CATEGORIES.includes(category);
+  const isFlexibleHours = category === 'BACK_OFFICE' || category === 'VALIDATOR';
 
   return (
     <div className={`flex h-screen w-screen font-sans overflow-hidden select-none transition-colors duration-200 ${
@@ -480,7 +626,7 @@ export const AdminDashboard: React.FC = () => {
                   <button
                     key={item.name}
                     onClick={() => setActiveNav(item.name)}
-                    title={isSidebarCollapsed ? item.name : undefined}
+                    title={isSidebarCollapsed ? item.label || item.name : undefined}
                     className={`w-full flex items-center justify-between ${isSidebarCollapsed ? 'justify-center px-0' : 'px-4'} py-3 rounded-xl font-medium text-sm transition-all duration-150 ${
                       isActive
                         ? isDarkMode 
@@ -493,7 +639,7 @@ export const AdminDashboard: React.FC = () => {
                   >
                     <div className="flex items-center space-x-3">
                       <Icon className={`w-5 h-5 ${isActive ? (isDarkMode ? 'text-indigo-400' : 'text-indigo-600') : 'text-slate-400'}`} />
-                      {!isSidebarCollapsed && <span>{item.name}</span>}
+                      {!isSidebarCollapsed && <span>{item.label || item.name}</span>}
                     </div>
                     {!isSidebarCollapsed && item.badge && (
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold shadow-xs ${item.badgeColor}`}>
@@ -535,7 +681,7 @@ export const AdminDashboard: React.FC = () => {
         }`}>
           <div>
             <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>
-              {user.role === 'MANAGER' ? 'Manager Supervisor Portal' : activeNav}
+              {user.role === 'MANAGER' ? 'Manager Supervisor Portal' : navItems.find((n: NavItem) => n.name === activeNav)?.label || activeNav}
             </h2>
             <p className="text-xs text-slate-400 font-medium mt-0.5">
               {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
@@ -602,30 +748,45 @@ export const AdminDashboard: React.FC = () => {
         <div className="p-8 space-y-6 max-w-7xl">
 
           {/* Section 2.2 & 2.3: Monitoring Active / Paused Banner for Employees */}
-          {user.role === 'EMPLOYEE' && (
+          {/* Auto-tracked roles have no check-in, so no "check in to start monitoring" banner. */}
+          {user.role === 'EMPLOYEE' && !isAutoTracked && (
             <MonitoringBanner isMonitoringActive={session.isActive} />
           )}
           {user.role === 'EMPLOYEE' && <IdleAlertWatcher />}
 
           {/* ================= CONDITIONAL TAB RENDERING ================= */}
 
-          {user.role === 'MANAGER' && (activeNav === 'Dashboard' || activeNav === 'Employee' || activeNav === 'Employees') ? (
+          {activeNav === 'Users' && allowedPage('Users') ? (
+            <UsersAdminView />
+          ) : activeNav === 'Lead Sheets' && allowedPage('Lead Sheets') ? (
+            <LeadSheetsPanel standalone />
+          ) : activeNav === 'Candidates' && allowedPage('Candidates') ? (
+            <CandidatesView />
+          ) : activeNav === 'Activity Logs' && allowedPage('Activity Logs') ? (
+            <ActivityLogsView />
+          ) : activeNav === 'My Team' && allowedPage('My Team') ? (
+            <TeamView />
+          ) : activeNav === 'Assign Leads' && allowedPage('Assign Leads') ? (
+            <CreateTaskPanel teamMode />
+          ) : activeNav === 'Tracking' && allowedPage('Tracking') ? (
+            <TrackingStatusView />
+          ) : (user.role === 'MANAGER' || category === 'SM') && (activeNav === 'Dashboard' || activeNav === 'Employee' || activeNav === 'Employees') ? (
             <ManagerDashboard activeNav={activeNav === 'Employees' ? 'Employee' : activeNav} />
-          ) : user.role === 'MANAGER' && activeNav === 'Live Monitor' ? (
+          ) : allowedPage('Live Monitor') && activeNav === 'Live Monitor' ? (
             <LiveMonitorView />
           ) : user.role === 'MANAGER' && activeNav === 'Attendance' ? (
             <ManagerAttendanceView />
-          ) : user.role === 'MANAGER' && activeNav === 'Productivity' ? (
+          ) : allowedPage('Productivity') && activeNav === 'Productivity' ? (
             <ManagerProductivityView />
-          ) : user.role === 'MANAGER' && activeNav === 'Reports' ? (
+          ) : allowedPage('Reports') && activeNav === 'Reports' ? (
             <ReportsView />
-          ) : user.role === 'MANAGER' && activeNav === 'Logs' ? (
+          ) : allowedPage('Logs') && activeNav === 'Logs' ? (
             <LogsView />
           ) : activeNav === 'Notifications' ? (
             <NotificationsPageView />
-          ) : user.role === 'MANAGER' && activeNav === 'Settings' ? (
+          ) : user.role === 'MANAGER' && allowedPage('Settings') && activeNav === 'Settings' ? (
             <ManagerSettingsView />
-          ) : user.role === 'MANAGER' && activeNav === 'Create Task' ? (
+          ) : allowedPage('Create Task') && activeNav === 'Create Task' ? (
             <CreateTaskPanel />
           ) : activeNav === 'My Tasks' ? (
             <MyTasksView />
@@ -714,9 +875,9 @@ export const AdminDashboard: React.FC = () => {
             </div>
           ) : activeNav === 'Task Productivity' ? (
             <TaskProductivityDashboard />
-          ) : activeNav === 'Screenshots' ? (
+          ) : activeNav === 'Screenshots' && allowedPage('Screenshots') ? (
             <ScreenshotsView />
-          ) : activeNav === 'Idle Time' ? (
+          ) : activeNav === 'Idle Time' && allowedPage('Idle Time') ? (
             <IdleTimeView />
           ) : activeNav === 'Settings' ? (
             <EmployeeSettingsView />
@@ -739,7 +900,13 @@ export const AdminDashboard: React.FC = () => {
                     </span>
                   </p>
                 </div>
-                <button 
+                {isFlexibleHours ? (
+                  // Back Office / Validator: no check-in/out - marked present automatically at sign-in, any hour.
+                  <span className="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+                    Attendance recorded automatically · work any time
+                  </span>
+                ) : (
+                <button
                   onClick={() => {
                     if (session.isActive) {
                       handleCheckOut();
@@ -756,6 +923,7 @@ export const AdminDashboard: React.FC = () => {
                   {session.isActive ? <LogOut className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                   <span>{session.isActive ? 'Check Out' : 'Check In / Start'}</span>
                 </button>
+                )}
               </div>
 
               {/* 4 Metric Cards Grid */}

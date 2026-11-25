@@ -17,6 +17,7 @@
     "dist": "npm run build:win",
     "release:win": "npm run build:all && node scripts/run-electron-builder.js --win --publish always",
     "typecheck": "tsc --noEmit",
+    "test": "npm run build:electron && node --test tests/activityClassifier.test.cjs",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "preview": "vite preview"
   },

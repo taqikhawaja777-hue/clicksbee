@@ -2,7 +2,8 @@
  * Shared Single-Source-of-Truth Productivity Calculation Engine
  * 
  * Formula:
- *   Overall Productivity = 90% x App Focus Score + 5% x Compliance Score + 5% x Attendance Ratio
+ *   Overall Productivity = 95% x App Focus Score + 5% x Compliance Score
+ *   (Attendance Ratio is still calculated and shown, but no longer part of the score.)
  * 
  * Rules:
  *   - Each component is between 0 and 100.
@@ -46,8 +47,8 @@ export interface ProductivityCalculationResult {
 }
 
 export const PRODUCTIVITY_WEIGHTS = {
-  attendanceWeight: 5,
-  appFocusWeight: 90,
+  attendanceWeight: 0,
+  appFocusWeight: 95,
   complianceWeight: 5,
   callEfficiencyWeight: 0,
 } as const;
@@ -167,7 +168,7 @@ export function computeProductivityMetrics(input: ProductivityCalculationInput):
   const complianceScore = clampScore(100 - idlePenaltyPoints);
 
   // 4. Overall Productivity:
-  // 90% App Focus + 5% Compliance + 5% Attendance
+  // 95% App Focus + 5% Compliance (attendance weight 0)
   const overallProductivityPercentage = (activeSeconds > 0 || shiftDurationSeconds > 0)
     ? clampScore(
         appFocusScore * (PRODUCTIVITY_WEIGHTS.appFocusWeight / 100) +

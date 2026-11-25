@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Bell, ShieldAlert, CheckCircle2, Clock, Coffee, Camera, ClipboardList, MessageSquare, AlertTriangle } from 'lucide-react';
+import { Bell, ShieldAlert, CheckCircle2, Clock, Coffee, Camera, ClipboardList, MessageSquare, AlertTriangle, PhoneOff, FileSpreadsheet } from 'lucide-react';
 import { apiService } from './src/services/api.service';
 import { socketService } from './src/services/socket.service';
 import { playAlertBeep } from './alertSound';
@@ -18,6 +18,11 @@ const ICONS_BY_TYPE: Record<string, React.ComponentType<{ className?: string }>>
   CHECK_IN: CheckCircle2,
   CHECK_OUT: CheckCircle2,
   IDLE_ALERT: Clock,
+  NO_CALL_ALERT: PhoneOff,
+  SUSPICIOUS_ACTIVITY: ShieldAlert,
+  AGENT_IDLE_ALERT: AlertTriangle,
+  SPREADSHEET_LIMIT: FileSpreadsheet,
+  LEAD_SHEET_RECEIVED: FileSpreadsheet,
   LATE_BREAK_RETURN: Coffee,
   WASHROOM_LIMIT: Coffee,
   CAMERA_ANOMALY: Camera,
@@ -33,6 +38,11 @@ const ICONS_BY_TYPE: Record<string, React.ComponentType<{ className?: string }>>
 
 const COLOR_BY_TYPE: Record<string, string> = {
   IDLE_ALERT: 'text-amber-500',
+  NO_CALL_ALERT: 'text-indigo-500',
+  SUSPICIOUS_ACTIVITY: 'text-rose-500',
+  AGENT_IDLE_ALERT: 'text-rose-500',
+  SPREADSHEET_LIMIT: 'text-emerald-600',
+  LEAD_SHEET_RECEIVED: 'text-emerald-600',
   LATE_BREAK_RETURN: 'text-amber-500',
   WASHROOM_LIMIT: 'text-amber-500',
   CAMERA_ANOMALY: 'text-rose-500',
@@ -45,6 +55,9 @@ const COLOR_BY_TYPE: Record<string, string> = {
   MANUAL_MESSAGE: 'text-indigo-500',
   TASK_REPLY: 'text-indigo-500',
 };
+
+/** Manager-feed alerts that beep and pop up the moment they arrive. */
+const ALERT_TYPES_WITH_SOUND = ['IDLE_ALERT', 'NO_CALL_ALERT', 'SUSPICIOUS_ACTIVITY', 'SPREADSHEET_LIMIT'];
 
 const timeAgo = (iso: string): string => {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -109,7 +122,8 @@ export const NotificationBell: React.FC<{ isDarkMode: boolean }> = ({ isDarkMode
       setNotifications((prev) => [notification, ...prev].slice(0, 20));
       // Manager feed: an employee just went idle - beep and pop it up. (The
       // employee's own copy is ignored here; their idle screen already beeped.)
-      if (notification.type === 'IDLE_ALERT' && notification.recipientType === 'ADMIN') {
+      // Team Lead: their agent idle too long (sent to them personally).
+      if ((ALERT_TYPES_WITH_SOUND.includes(notification.type) && notification.recipientType === 'ADMIN') || notification.type === 'AGENT_IDLE_ALERT' || notification.type === 'LEAD_SHEET_RECEIVED') {
         playAlertBeep(2);
         setToast(notification);
       }
@@ -163,7 +177,9 @@ export const NotificationBell: React.FC<{ isDarkMode: boolean }> = ({ isDarkMode
     <div className="relative" ref={containerRef}>
       {toast && (
         <div className="fixed top-5 right-5 z-[70] w-80 p-4 rounded-2xl shadow-2xl bg-white dark:bg-slate-900 border-2 border-amber-400 flex items-start gap-3">
-          <Clock className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+          {React.createElement(ICONS_BY_TYPE[toast.type] || Clock, {
+            className: `w-5 h-5 shrink-0 mt-0.5 ${COLOR_BY_TYPE[toast.type] || 'text-amber-500'}`,
+          })}
           <div className="min-w-0 flex-1">
             <p className="text-sm font-bold text-slate-800 dark:text-white">{toast.title}</p>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{toast.message}</p>

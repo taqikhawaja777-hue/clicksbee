@@ -94,7 +94,7 @@ export const ManagerProductivityView: React.FC = () => {
         <div>
           <h3 className="text-xl font-bold text-slate-800 dark:text-white">Overall Productivity</h3>
           <p className="text-xs text-slate-400 mt-1">
-            Real 70% App Focus + 15% Compliance Score + 15% Attendance Ratio, computed by the unified productivity formula - recalculated per employee, per day selected below.
+            Real 95% App Focus + 5% Compliance Score, computed by the unified productivity formula - recalculated per employee, per day selected below.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -145,7 +145,8 @@ export const ManagerProductivityView: React.FC = () => {
               <p className="text-xs font-medium text-indigo-100">Overall Productivity</p>
               <h4 className="text-4xl font-extrabold mt-2">{summary.productivityPercentage}%</h4>
               <p className="text-xs text-indigo-100 mt-1">
-                {summary.weightsUsed.appFocusWeight}% App Focus + {summary.weightsUsed.complianceWeight}% Compliance + {summary.weightsUsed.attendanceWeight}% Attendance
+                {summary.weightsUsed.appFocusWeight}% App Focus + {summary.weightsUsed.complianceWeight}% Compliance
+                {summary.weightsUsed.attendanceWeight > 0 && ` + ${summary.weightsUsed.attendanceWeight}% Attendance`}
               </p>
             </div>
 
@@ -172,7 +173,7 @@ export const ManagerProductivityView: React.FC = () => {
             <h4 className="text-lg font-bold text-slate-800 dark:text-white mb-4">
               Real Tracked Time — {selectedEmployee?.fullName || 'Employee'}
             </h4>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-4 text-sm">
               <div>
                 <p className="text-slate-400">Combined Active</p>
                 <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.combinedActiveSeconds)}</p>
@@ -188,6 +189,10 @@ export const ManagerProductivityView: React.FC = () => {
               <div>
                 <p className="text-slate-400">Yeastar Linkus Lite</p>
                 <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.yeastarSeconds)}</p>
+              </div>
+              <div>
+                <p className="text-slate-400">Spreadsheet (in active)</p>
+                <p className="font-bold text-slate-800 dark:text-white">{formatSeconds(summary.spreadsheetSeconds || 0)}</p>
               </div>
               <div>
                 <p className="text-slate-400">Idle</p>

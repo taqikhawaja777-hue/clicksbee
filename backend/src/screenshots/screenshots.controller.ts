@@ -7,18 +7,26 @@ import {
   Param,
   Query,
   Body,
+  Req,
   UseGuards,
   UseInterceptors,
   UploadedFile,
   BadRequestException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
 import { ScreenshotsService } from './screenshots.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { PermissionsGuard, RequirePermission } from '../common/access/permissions.guard';
+import { TrackingAuthGuard, trackingUserId } from '../common/access/tracking-auth.guard';
 
+/**
+ * Screenshots are Admin/Boss only (screenshots.view). The employee app's own
+ * uploads are the exception - they write, never read. /file/* also serves
+ * task and message attachments (same storage), which any signed-in member of
+ * the organization may open.
+ */
 @ApiTags('Screenshots')
 @Controller('screenshots')
 export class ScreenshotsController {
@@ -28,8 +36,10 @@ export class ScreenshotsController {
     summary:
       'Desktop agent 1-minute archive capture: writes storage/screenshots/<Employee Name>/<date>/<date_time>.jpg and records it. Idempotent on eventId.',
   })
+  @UseGuards(TrackingAuthGuard)
   @Post('capture')
   async captureScreenshot(
+    @Req() req: any,
     @Body() dto: {
       userName: string;
       userId: string;
@@ -45,13 +55,16 @@ export class ScreenshotsController {
     if (!dto || !dto.imageUrl) {
       throw new BadRequestException('Image URL data is required');
     }
-    return this.screenshotsService.saveCaptureRecord(dto);
+    return this.screenshotsService.saveCaptureRecord({ ...dto, userId: trackingUserId(req, dto.userId) });
   }
 
-  @ApiOperation({ summary: 'Fetch live screenshots feed from MongoDB collection' })
+  @ApiOperation({ summary: 'Latest screenshots of your organization (Admin/Boss)' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('screenshots.view')
   @Get('feed')
-  async getFeed() {
-    return this.screenshotsService.getFeedRecords();
+  async getFeed(@CurrentUser('organizationId') organizationId: string) {
+    return this.screenshotsService.getFeedRecords(organizationId);
   }
 
   @ApiOperation({ summary: 'Upload screenshot image' })
@@ -81,9 +94,10 @@ export class ScreenshotsController {
     );
   }
 
-  @ApiOperation({ summary: 'Get screenshots' })
+  @ApiOperation({ summary: 'Get screenshots (Admin/Boss)' })
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('screenshots.view')
   @Get()
   async getScreenshots(
     @CurrentUser('organizationId') organizationId: string,
@@ -115,24 +129,22 @@ export class ScreenshotsController {
     return this.screenshotsService.getServerConfig(organizationId);
   }
 
-  @ApiOperation({ summary: 'Set the org-wide screenshot destination (manager/admin only)' })
+  @ApiOperation({ summary: 'Set the org-wide screenshot destination (Admin/Boss)' })
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('org.settings')
   @Put('server-config')
   async setServerConfig(
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
     @Body() body: { ip: string | null; port?: number },
   ) {
-    if (role !== 'ADMIN' && role !== 'MANAGER') {
-      throw new ForbiddenException('Only managers and admins can change where screenshots are stored');
-    }
     return this.screenshotsService.setServerConfig(organizationId, body?.ip ?? null, body?.port);
   }
 
-  @ApiOperation({ summary: 'Get screenshot by ID' })
+  @ApiOperation({ summary: 'Get screenshot by ID (Admin/Boss)' })
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('screenshots.view')
   @Get(':id')
   async getScreenshotById(
     @Param('id') id: string,
@@ -143,9 +155,10 @@ export class ScreenshotsController {
     return this.screenshotsService.getScreenshotById(id, organizationId, reqUserId, role);
   }
 
-  @ApiOperation({ summary: 'Delete screenshot' })
+  @ApiOperation({ summary: 'Delete screenshot (Admin/Boss)' })
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('screenshots.view')
   @Delete(':id')
   async deleteScreenshot(
     @Param('id') id: string,
@@ -156,9 +169,13 @@ export class ScreenshotsController {
     return this.screenshotsService.deleteScreenshot(id, organizationId, reqUserId, role);
   }
 
-  @ApiOperation({ summary: 'Stream screenshot image file' })
+  @ApiOperation({ summary: 'Stream a stored file - screenshots: Admin/Boss; attachments: your organization' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @Get('file/*')
-  async getFile(@Param('0') relativePath: string) {
-    return this.screenshotsService.getScreenshotStream(decodeURIComponent(relativePath));
+  async getFile(@Param('0') relativePath: string, @Req() req: any) {
+    const path = decodeURIComponent(relativePath);
+    await this.screenshotsService.assertFileAccess(path, req.user);
+    return this.screenshotsService.getScreenshotStream(path);
   }
 }

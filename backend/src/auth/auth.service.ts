@@ -9,6 +9,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveSignupCategory, withAccess } from './signup.util';
+import { storageFor } from '../common/access/access.util';
 import { createHash, randomUUID } from 'crypto';
 import * as argon2 from 'argon2';
 import * as bcrypt from 'bcryptjs';
@@ -57,6 +59,10 @@ export class AuthService {
     if (existingUser) {
       throw new ConflictException('User with this email already exists');
     }
+
+    // The server decides the access category - never the role sent by the client.
+    const { category, designation } = resolveSignupCategory(dto);
+    const stored = storageFor(category);
 
     const orgSlug = dto.organizationName
       .toLowerCase()
@@ -117,9 +123,10 @@ export class AuthService {
         lastName: dto.lastName,
         email: cleanEmail,
         passwordHash,
-        role: dto.role || Role.ADMIN,
+        role: stored.role as Role,
         departmentId,
-        designation: dto.designation?.trim() || undefined,
+        designation: designation ?? stored.designation ?? undefined,
+        officeCategory: category,
         employeeCode: `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
       },
     });
@@ -128,7 +135,7 @@ export class AuthService {
 
     const { passwordHash: _, ...result } = user;
     return {
-      user: result,
+      user: withAccess(result),
       tokens,
     };
   }
@@ -182,7 +189,7 @@ export class AuthService {
 
     const { passwordHash: _, ...result } = user;
     return {
-      user: result,
+      user: withAccess(result),
       tokens,
     };
   }
@@ -350,6 +357,8 @@ export class AuthService {
         departmentId: true,
         teamId: true,
         managerId: true,
+        designation: true,
+        officeCategory: true,
         createdAt: true,
         updatedAt: true,
         organization: {
@@ -367,7 +376,7 @@ export class AuthService {
       throw new NotFoundException('User profile not found');
     }
 
-    return user;
+    return withAccess(user);
   }
 
   private async generateTokens(

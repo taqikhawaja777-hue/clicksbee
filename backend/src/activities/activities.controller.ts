@@ -21,10 +21,13 @@ import {
 } from './dto/activity.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '@prisma/client';
 
 @ApiTags('Activities')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('activities')
 export class ActivitiesController {
   constructor(private readonly activitiesService: ActivitiesService) {}
@@ -59,6 +62,7 @@ export class ActivitiesController {
   }
 
   @ApiOperation({ summary: 'Get user application usage' })
+  @Roles(Role.ADMIN)
   @Get('applications/user/:userId')
   async getUserApplications(
     @Param('userId') targetUserId: string,
@@ -99,6 +103,7 @@ export class ActivitiesController {
   }
 
   @ApiOperation({ summary: 'Get user website usage' })
+  @Roles(Role.ADMIN)
   @Get('websites/user/:userId')
   async getUserWebsites(
     @Param('userId') targetUserId: string,
@@ -131,6 +136,7 @@ export class ActivitiesController {
   }
 
   @ApiOperation({ summary: 'Get organization activity feed' })
+  @Roles(Role.ADMIN)
   @Get('feed')
   async getActivityFeed(
     @CurrentUser('organizationId') organizationId: string,

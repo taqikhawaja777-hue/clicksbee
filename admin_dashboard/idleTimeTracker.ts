@@ -20,11 +20,52 @@ import { BACKEND_URL } from './serverConfig';
 import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import {
+  ActivityState,
+  ACTIVE_STATES,
+  CALL_MERGE_GAP_SECONDS,
+  DEFAULT_UNPRODUCTIVE_KEYWORDS,
+  DIALER_CONTEXT_SECONDS,
+  DialerLabel,
+  IDLE_STATES,
+  IDLE_THRESHOLD_SECONDS,
+  NO_CALL_ALERT_SECONDS,
+  SPREADSHEET_INPUT_SECONDS,
+  analyzeInputPattern,
+  classifyTick,
+  isSpreadsheetWindow,
+  isUnproductiveWindow,
+} from './activityClassifier';
+import { AudioLevelProbe, InputSampler, ScreenChangeSampler, readMicrophoneUsers } from './activitySignals';
+import { authHeaders } from './authSession';
 
 export type ActiveAppLabel = 'Cisco Jabber' | '3CX' | 'Yeastar Linkus Lite' | 'Other';
 
-const IDLE_THRESHOLD_SECONDS = 120; // 2 minutes
-const POLL_INTERVAL_MS = 20000; // 20s
+/** Per-day call/activity breakdown sent with every snapshot (backend: IdleTimeLog.activityBreakdown). */
+interface ActivityBreakdown {
+  callSeconds: number;
+  callCount: number;
+  dialingSeconds: number;
+  otherWorkSeconds: number;
+  unproductiveSeconds: number;
+  suspiciousSeconds: number;
+  longestNoCallGapSeconds: number;
+  /** Spreadsheet in front + mouse/keyboard use - part of active time, not extra. */
+  spreadsheetSeconds: number;
+}
+
+const emptyBreakdown = (): ActivityBreakdown => ({
+  callSeconds: 0,
+  callCount: 0,
+  dialingSeconds: 0,
+  otherWorkSeconds: 0,
+  unproductiveSeconds: 0,
+  suspiciousSeconds: 0,
+  longestNoCallGapSeconds: 0,
+  spreadsheetSeconds: 0,
+});
+
+const POLL_INTERVAL_MS = 10000; // 10s - call start/end resolution
 const BATCH_INTERVAL_MS = 90000; // 90s
 const API_BASE_URL_DEFAULT = BACKEND_URL;
 
@@ -67,6 +108,9 @@ interface QueuedSnapshot {
   appFocusSeconds: Record<string, number>;
   lastActiveApp: string | null;
   lastIsIdle: boolean;
+  activityBreakdown?: ActivityBreakdown;
+  lastState?: ActivityState | null;
+  idleSince?: string | null;
   queuedAt: number;
 }
 
@@ -89,8 +133,7 @@ const SHIFT_START_MINUTES_OF_DAY = 10 * 60; // 10:00
 const SHIFT_END_MINUTES_OF_DAY = 19 * 60; // 19:00
 
 const SCHEDULED_BREAKS = [
-  { start: 13 * 60 + 30, end: 14 * 60 + 10 }, // Lunch & Zuhr (13:30 - 14:10)
-  { start: 17 * 60, end: 17 * 60 + 20 }, // Tea & Asar (17:00 - 17:20)
+  { start: 14 * 60, end: 15 * 60 }, // the only break: 2:00 PM - 3:00 PM (same as backend shift-day.util.ts)
 ];
 
 function getShiftDayKey(d: Date = new Date()): string {
@@ -149,6 +192,51 @@ class IdleTimeTracker {
   private idleEpisodeStart: number | null = null;
   private idleNotification: Notification | null = null;
 
+  // Activity classification (see activityClassifier.ts)
+  private breakdown: ActivityBreakdown = emptyBreakdown();
+  private lastState: ActivityState | null = null;
+  private inCall = false;
+  private lastCallDialer: DialerLabel | null = null;
+  private lastCallEndedAt: number | null = null;
+  private lastThreeCxFocusAt = 0;
+  private foregroundKey = '';
+  private foregroundChangeTimes: number[] = [];
+  private noCallAlerted = false;
+  private suspiciousSince: number | null = null;
+  private gapPausedForBreak = false;
+  private unproductiveKeywords: string[] = DEFAULT_UNPRODUCTIVE_KEYWORDS;
+  private lastDiagnostics: Record<string, unknown> = {};
+  private readonly audioProbe = new AudioLevelProbe();
+  private readonly inputSampler = new InputSampler();
+  private readonly screenSampler = new ScreenChangeSampler();
+
+  private flexibleHours = false;
+
+  /** Back Office / Validator: no duty hours or breaks - count activity at any time of day. */
+  public setFlexibleHours(flexible: boolean): void {
+    this.flexibleHours = flexible;
+  }
+
+  public setUnproductiveKeywords(keywords: string[] | null | undefined): void {
+    this.unproductiveKeywords = Array.isArray(keywords) ? keywords.map((k) => String(k).toLowerCase().trim()).filter(Boolean) : DEFAULT_UNPRODUCTIVE_KEYWORDS;
+  }
+
+  /** "No call for 15 min" and "suspicious activity" alerts - renderer beeps, shows and reports them. */
+  private sendActivityAlert(payload: Record<string, unknown>, notificationBody?: string): void {
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (!w.isDestroyed()) w.webContents.send('activity-alert', payload);
+    });
+    if (!notificationBody) return;
+    try {
+      shell.beep();
+      if (Notification.isSupported()) {
+        new Notification({ title: 'WorkTrackPro', body: notificationBody, urgency: 'critical' }).show();
+      }
+    } catch {
+      // no notification support
+    }
+  }
+
   /**
    * Idle alert on the employee's PC the moment they cross the idle
    * threshold: Windows notification with sound, a beep, and a flashing
@@ -166,9 +254,15 @@ class IdleTimeTracker {
     try {
       if (Notification.isSupported()) {
         this.idleNotification?.close();
+        // Windows often shows only the title of a collapsed notification - keep the time in it.
+        const since = new Date(idleSince).toLocaleTimeString('en-US', {
+          timeZone: 'Asia/Karachi',
+          hour: 'numeric',
+          minute: '2-digit',
+        });
         const notification = new Notification({
-          title: 'You are idle',
-          body: 'No mouse or keyboard activity for 2 minutes. Move the mouse or press a key to continue working.',
+          title: `You are idle since ${since}`,
+          body: 'Move your mouse or press any key to continue working.',
           urgency: 'critical',
           timeoutType: 'never',
         });
@@ -187,7 +281,18 @@ class IdleTimeTracker {
       console.warn('[IdleTimeTracker] Could not show idle notification:', err);
     }
     BrowserWindow.getAllWindows().forEach((w) => {
-      if (!w.isDestroyed()) w.flashFrame(true);
+      if (w.isDestroyed()) return;
+      w.flashFrame(true);
+      // Bring the app in front (without taking the keyboard) so the "You are
+      // idle" message is actually on screen, not behind other programs.
+      try {
+        if (w.webContents.isOffscreen()) return; // hidden helper window (screenshot stamping), never shown
+        if (w.isMinimized()) w.restore();
+        if (!w.isVisible()) w.showInactive();
+        w.moveTop();
+      } catch {
+        // window closing
+      }
     });
   }
 
@@ -270,7 +375,7 @@ class IdleTimeTracker {
       try {
         const response = await fetch(`${this.apiBaseUrl}/api/v1/tracking/idle-snapshots`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({
             userId: item.userId,
             date: item.date,
@@ -279,6 +384,9 @@ class IdleTimeTracker {
             appFocusSeconds: item.appFocusSeconds,
             lastActiveApp: item.lastActiveApp,
             lastIsIdle: item.lastIsIdle,
+            activityBreakdown: item.activityBreakdown,
+            lastState: item.lastState ?? null,
+            idleSince: item.idleSince ?? null,
           }),
         });
         if (!response.ok && response.status >= 500) {
@@ -307,6 +415,10 @@ class IdleTimeTracker {
     this.resetAccumulatorsForNewDay(getShiftDayKey());
 
     console.log(`[IdleTimeTracker] Starting idle/active tracking for employeeId=${employeeId}`);
+
+    this.inputSampler.start();
+    this.screenSampler.start();
+    this.audioProbe.start();
 
     void this.drainQueue();
     void this.resumeFromExistingSnapshot().finally(() => {
@@ -402,13 +514,21 @@ class IdleTimeTracker {
     this.appFocusSeconds = {};
     this.lastActiveApp = null;
     this.lastIsIdle = false;
+    this.breakdown = emptyBreakdown();
+    this.lastState = null;
+    this.inCall = false;
+    this.lastCallDialer = null;
+    this.lastCallEndedAt = null;
+    this.noCallAlerted = false;
+    this.suspiciousSince = null;
+    this.gapPausedForBreak = false;
   }
 
   private async resumeFromExistingSnapshot(): Promise<void> {
     try {
       const today = this.dateKey;
       const url = `${this.apiBaseUrl}/api/v1/tracking/idle-snapshots?employeeId=${this.employeeId}&startDate=${today}&endDate=${today}`;
-      const response = await fetch(url);
+      const response = await fetch(url, { headers: authHeaders() });
       if (!response.ok) return;
       const payload = await response.json();
       const rows: Array<{
@@ -418,6 +538,7 @@ class IdleTimeTracker {
         appFocusSeconds: Record<string, number>;
         lastActiveApp: string | null;
         lastIsIdle: boolean;
+        activityBreakdown?: Partial<ActivityBreakdown> | null;
       }> = Array.isArray(payload) ? payload : (payload?.data || []);
       const row = rows.find((r) => r.date === today);
       if (!row) return;
@@ -427,6 +548,10 @@ class IdleTimeTracker {
       this.appFocusSeconds = { ...(row.appFocusSeconds || {}), ...this.appFocusSeconds };
       this.lastActiveApp = row.lastActiveApp ?? this.lastActiveApp;
       this.lastIsIdle = row.lastIsIdle ?? this.lastIsIdle;
+      const saved = row.activityBreakdown || {};
+      (Object.keys(this.breakdown) as (keyof ActivityBreakdown)[]).forEach((k) => {
+        this.breakdown[k] = Math.max(this.breakdown[k], Number(saved[k]) || 0);
+      });
       console.log(
         `[IdleTimeTracker] Resumed today's snapshot: active=${this.activeSeconds}s idle=${this.idleSeconds}s`,
       );
@@ -440,6 +565,9 @@ class IdleTimeTracker {
     console.log('[IdleTimeTracker] Stopping idle/active tracking.');
     this.isTracking = false;
     this.endIdleEpisode('stopped');
+    this.inputSampler.stop();
+    this.screenSampler.stop();
+    this.audioProbe.stop();
 
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
@@ -459,10 +587,26 @@ class IdleTimeTracker {
 
   private async pollActivity(): Promise<void> {
     if (!this.isTracking) return;
+    const now = Date.now();
 
-    if (!isTrackableWorkTime()) {
-      // Break or off-shift: an open idle episode ends here, and no new alert fires.
+    // Back Office / Validator have no duty hours - tracked at any time of day.
+    if (!this.flexibleHours && !isTrackableWorkTime()) {
+      // Break or off-shift: nothing is counted, open episodes end, and the
+      // "no call" gap pauses (it restarts when work time resumes).
       this.endIdleEpisode('break');
+      this.suspiciousSince = null;
+      if (this.inCall) {
+        this.inCall = false;
+        this.lastCallEndedAt = now;
+      }
+      if (this.breakdown.callCount > 0 && this.lastCallEndedAt !== null && !this.gapPausedForBreak) {
+        this.breakdown.longestNoCallGapSeconds = Math.max(
+          this.breakdown.longestNoCallGapSeconds,
+          Math.round((now - this.lastCallEndedAt) / 1000),
+        );
+        this.gapPausedForBreak = true;
+      }
+      this.lastState = null;
       return;
     }
 
@@ -472,37 +616,188 @@ class IdleTimeTracker {
       this.resetAccumulatorsForNewDay(todayKey);
     }
 
+    if (this.gapPausedForBreak) {
+      if (this.lastCallEndedAt !== null) this.lastCallEndedAt = now;
+      this.gapPausedForBreak = false;
+      this.noCallAlerted = false;
+    }
+
     const idleSecondsNow = powerMonitor.getSystemIdleTime();
-    const systemIdle = idleSecondsNow >= IDLE_THRESHOLD_SECONDS;
-    const win = await this.getActiveWinResult();
-    let appLabel = classifyActiveApp(win);
+    // Who holds the mic: the Windows audio engine (live, via the level probe)
+    // plus the privacy registry as a backup - Windows doesn't always update
+    // the registry for every program.
+    const [win, registryMicUsers] = await Promise.all([this.getActiveWinResult(), readMicrophoneUsers()]);
+    const micProcesses = [...new Set([...(this.audioProbe.getMicUsers(now) || []), ...registryMicUsers])];
+    const appLabel = classifyActiveApp(win);
+    const foregroundDialer: DialerLabel | null = appLabel === 'Other' ? null : appLabel;
+    if (foregroundDialer === '3CX') this.lastThreeCxFocusAt = now;
 
-    // If the dialer is the FOCUSED window and the system is idle, treat as active —
-    // the employee is likely on a headset call watching the Jabber/3CX/Yeastar UI.
-    // If the dialer is in the background/tray and the system is idle, it IS idle.
-    const dialerIsFocused =
-      appLabel === 'Cisco Jabber' || appLabel === '3CX' || appLabel === 'Yeastar Linkus Lite';
-    const isIdle = systemIdle && !dialerIsFocused;
+    const foregroundKey = `${win?.owner?.name || ''}|${win?.title || ''}`;
+    if (foregroundKey !== this.foregroundKey) {
+      if (this.foregroundKey) this.foregroundChangeTimes.push(now);
+      this.foregroundKey = foregroundKey;
+    }
+    this.foregroundChangeTimes = this.foregroundChangeTimes.filter((t) => now - t < 11 * 60 * 1000);
 
-    const pollSeconds = POLL_INTERVAL_MS / 1000;
-    if (isIdle) {
-      this.idleSeconds += pollSeconds;
-    } else {
-      this.activeSeconds += pollSeconds;
-      this.appFocusSeconds[appLabel] = (this.appFocusSeconds[appLabel] || 0) + pollSeconds;
+    const unproductive =
+      !foregroundDialer && isUnproductiveWindow(win?.title || '', win?.owner?.name || '', this.unproductiveKeywords);
+    const pattern = analyzeInputPattern(
+      this.inputSampler.samples,
+      this.screenSampler.samples,
+      this.foregroundChangeTimes,
+      now,
+    );
+    const secondsSinceVoice = this.audioProbe.secondsSinceVoice(micProcesses, now);
+    const result = classifyTick({
+      idleSeconds: idleSecondsNow,
+      foreground: { dialer: foregroundDialer, unproductive },
+      micProcesses,
+      threeCxContext: now - this.lastThreeCxFocusAt <= DIALER_CONTEXT_SECONDS * 1000,
+      secondsSinceVoice,
+      pattern,
+      // A call still marked open that isn't on the mic any more ended just now.
+      secondsSinceCallEnded: this.inCall ? 0 : this.lastCallEndedAt !== null ? (now - this.lastCallEndedAt) / 1000 : null,
+      lastCallDialer: this.lastCallDialer,
+    });
+
+    // Spreadsheet time: Excel / Sheets in front AND the mouse or keyboard used recently.
+    const spreadsheet =
+      isSpreadsheetWindow(win?.title || '', win?.owner?.name || '') && idleSecondsNow <= SPREADSHEET_INPUT_SECONDS;
+    this.applyTick(result.state, result.dialer, result.reason || null, now, idleSecondsNow, spreadsheet);
+
+    this.lastDiagnostics = {
+      at: new Date(now).toISOString(),
+      state: result.state,
+      dialer: result.dialer,
+      reason: result.reason || null,
+      idleSeconds: idleSecondsNow,
+      foreground: win?.title || win?.owner?.name || null,
+      micProcesses,
+      secondsSinceVoice: secondsSinceVoice === null ? null : Math.round(secondsSinceVoice),
+      voiceProbe: this.audioProbe.isRunning(),
+      inCall: this.inCall,
+      breakdown: { ...this.breakdown },
+    };
+    this.writeDiagnosticsLine(this.lastDiagnostics);
+  }
+
+  private applyTick(
+    state: ActivityState,
+    dialer: DialerLabel | null,
+    reason: string | null,
+    now: number,
+    idleSecondsNow: number,
+    spreadsheet = false,
+  ): void {
+    const secs = POLL_INTERVAL_MS / 1000;
+    const b = this.breakdown;
+
+    if (state === 'ON_CALL') b.callSeconds += secs;
+    else if (state === 'DIALING') b.dialingSeconds += secs;
+    else if (state === 'OTHER_WORK') b.otherWorkSeconds += secs;
+    else if (state === 'UNPRODUCTIVE') b.unproductiveSeconds += secs;
+    else if (state === 'SUSPICIOUS') b.suspiciousSeconds += secs;
+
+    // Active = on call / dialing / other work; idle = idle + suspicious.
+    // Unproductive is its own bucket - neither active nor idle.
+    if (ACTIVE_STATES.includes(state)) {
+      this.activeSeconds += secs;
+      if (spreadsheet) b.spreadsheetSeconds += secs; // a part of active time, never added on top
+      const label = dialer || 'Other';
+      this.appFocusSeconds[label] = (this.appFocusSeconds[label] || 0) + secs;
+    } else if (IDLE_STATES.includes(state)) {
+      this.idleSeconds += secs;
     }
 
-    this.lastActiveApp = isIdle ? null : appLabel;
-    this.lastIsIdle = isIdle;
+    // Calls: count each mic-on period (short drops merge into the same call).
+    if (state === 'ON_CALL') {
+      if (dialer === '3CX') this.lastThreeCxFocusAt = now; // a long call keeps its 3CX context
+      if (!this.inCall) {
+        const gap = this.lastCallEndedAt !== null ? (now - this.lastCallEndedAt) / 1000 : null;
+        if (gap === null || gap > CALL_MERGE_GAP_SECONDS) {
+          b.callCount += 1;
+          if (gap !== null) b.longestNoCallGapSeconds = Math.max(b.longestNoCallGapSeconds, Math.round(gap));
+        }
+        this.inCall = true;
+        this.noCallAlerted = false;
+      }
+      this.lastCallDialer = dialer;
+    } else if (this.inCall) {
+      this.inCall = false;
+      this.lastCallEndedAt = now;
+    }
 
-    const now = Date.now();
-    if (isIdle && this.idleEpisodeStart === null) {
+    // "No call for 15 minutes" - only for someone who has made calls today.
+    if (!this.inCall && b.callCount > 0 && this.lastCallEndedAt !== null && !this.noCallAlerted) {
+      const gapSeconds = (now - this.lastCallEndedAt) / 1000;
+      if (gapSeconds >= NO_CALL_ALERT_SECONDS) {
+        this.noCallAlerted = true;
+        const minutes = Math.round(gapSeconds / 60);
+        this.sendActivityAlert(
+          { kind: 'no_call', since: new Date(this.lastCallEndedAt).toISOString(), minutes },
+          `No call for ${minutes} minutes. Your manager has been notified.`,
+        );
+      }
+    }
+
+    // Suspicious activity (jiggler / auto-input): alert once per episode.
+    if (state === 'SUSPICIOUS') {
+      if (this.suspiciousSince === null) {
+        this.suspiciousSince = now;
+        this.sendActivityAlert(
+          { kind: 'suspicious', since: new Date(now).toISOString(), reason },
+          'Unusual activity detected - it has been recorded and your manager notified.',
+        );
+      }
+    } else if (state !== 'IDLE') {
+      this.suspiciousSince = null;
+    }
+
+    // Idle alert episode (real idle only; suspicious has its own alert).
+    if (state === 'IDLE' && this.idleEpisodeStart === null) {
       this.startIdleEpisode(now - idleSecondsNow * 1000);
-    } else if (!isIdle && this.idleEpisodeStart !== null) {
-      // Input resumed -> it happened idleSecondsNow ago. A focused dialer
-      // with no input (headset call) ends the episode now.
-      this.endIdleEpisode('active', systemIdle ? now : now - idleSecondsNow * 1000);
+    } else if (state !== 'IDLE' && state !== 'SUSPICIOUS' && this.idleEpisodeStart !== null) {
+      // Input resumed idleSecondsNow ago; a headset call with no input ends it now.
+      this.endIdleEpisode('active', idleSecondsNow >= IDLE_THRESHOLD_SECONDS ? now : now - idleSecondsNow * 1000);
     }
+
+    this.lastState = state;
+    this.lastIsIdle = IDLE_STATES.includes(state);
+    this.lastActiveApp = this.lastIsIdle ? null : dialer || 'Other';
+  }
+
+  /** Breakdown with the still-running "no call" gap included. */
+  private breakdownForSnapshot(): ActivityBreakdown {
+    const b = { ...this.breakdown };
+    if (!this.inCall && b.callCount > 0 && this.lastCallEndedAt !== null && !this.gapPausedForBreak) {
+      b.longestNoCallGapSeconds = Math.max(b.longestNoCallGapSeconds, Math.round((Date.now() - this.lastCallEndedAt) / 1000));
+    }
+    (Object.keys(b) as (keyof ActivityBreakdown)[]).forEach((k) => {
+      b[k] = Math.round(b[k]);
+    });
+    return b;
+  }
+
+  /**
+   * One line per poll in userData/activity-diagnostics.log (kept under
+   * ~1 MB) - the field test reads this to see exactly why each 10 seconds
+   * was classified the way it was.
+   */
+  private writeDiagnosticsLine(entry: Record<string, unknown>): void {
+    try {
+      const file = path.join(app.getPath('userData'), 'activity-diagnostics.log');
+      if (fs.existsSync(file) && fs.statSync(file).size > 1024 * 1024) {
+        const tail = fs.readFileSync(file, 'utf-8').split('\n').slice(-2000).join('\n');
+        fs.writeFileSync(file, tail, 'utf-8');
+      }
+      fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf-8');
+    } catch {
+      // diagnostics are best-effort
+    }
+  }
+
+  public getDiagnostics(): Record<string, unknown> {
+    return { ...this.lastDiagnostics };
   }
 
   private async flushSnapshot(): Promise<void> {
@@ -518,12 +813,16 @@ class IdleTimeTracker {
       ),
       lastActiveApp: this.lastActiveApp,
       lastIsIdle: this.lastIsIdle,
+      activityBreakdown: this.breakdownForSnapshot(),
+      lastState: this.lastState,
+      // Start of the current idle period - the Team Lead "agent idle" alert reads it.
+      idleSince: this.idleEpisodeStart !== null ? new Date(this.idleEpisodeStart).toISOString() : null,
     };
 
     try {
       const response = await fetch(`${this.apiBaseUrl}/api/v1/tracking/idle-snapshots`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(snapshotPayload),
       });
       if (!response.ok) {
@@ -571,6 +870,14 @@ export function registerIdleTimeTrackerIpcHandlers(): void {
   ipcMain.handle('get-idle-time-tracker-status', () => {
     return { success: true, ...idleTimeTracker.getStatus() };
   });
+
+  // Manager's unproductive apps/sites list (Settings) - sent by the renderer at login.
+  ipcMain.handle('set-activity-config', (_event, config: { unproductiveKeywords?: string[] | null }) => {
+    idleTimeTracker.setUnproductiveKeywords(config?.unproductiveKeywords ?? null);
+    return { success: true };
+  });
+
+  ipcMain.handle('get-activity-diagnostics', () => idleTimeTracker.getDiagnostics());
 
   console.log('[IdleTimeTracker] IPC handlers registered.');
 }

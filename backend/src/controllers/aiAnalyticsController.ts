@@ -8,8 +8,15 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { PrismaService } from '../prisma/prisma.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PermissionsGuard, RequirePermission } from '../common/access/permissions.guard';
 
+// Live Monitor's AI screen summary (includes the latest screen capture) -
+// Admin/Boss only, like screenshots. Previously reachable without a login.
 @ApiTags('AI Analytics')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermission('liveMonitor.view')
 @Controller('analytics')
 export class AiAnalyticsController {
   constructor(private readonly prisma: PrismaService) {}

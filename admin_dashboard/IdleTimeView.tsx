@@ -4,6 +4,7 @@ import { useIdleTimeSummary } from './src/hooks/useIdleTimeSummary';
 import { EmployeeIdleStatus, IdleStatus } from './src/services/productivityApi.service';
 import { ProductivityBadge } from './ProductivityBadge';
 import { PresenceVerificationCard } from './PresenceVerificationCard';
+import { useEmployee } from './EmployeeContext';
 
 const STATUS_BADGE: Record<IdleStatus, { label: string; classes: string }> = {
   ACTIVE_JABBER: { label: 'Active · Jabber', classes: 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50' },
@@ -16,6 +17,24 @@ const STATUS_BADGE: Record<IdleStatus, { label: string; classes: string }> = {
   CHECKED_OUT: { label: 'Checked Out', classes: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700' },
   NOT_CHECKED_IN: { label: 'Not Checked In', classes: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700' },
 };
+
+/** Live activity state from the desktop classifier - shown instead of the plain status while on shift. */
+const ACTIVITY_BADGE: Record<string, { label: string; classes: string }> = {
+  ON_CALL: { label: 'On call', classes: 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800' },
+  DIALING: { label: 'Dialing', classes: 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-900/50' },
+  UNPRODUCTIVE: { label: 'Unproductive app', classes: 'bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-900/50' },
+  SUSPICIOUS: { label: 'Suspicious', classes: 'bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-900/50' },
+  IDLE: STATUS_BADGE.IDLE,
+};
+
+const SHIFT_OVER_STATUSES: IdleStatus[] = ['ON_BREAK', 'CHECKED_OUT', 'NOT_CHECKED_IN'];
+
+function badgeFor(employee: EmployeeIdleStatus) {
+  if (employee.activityState && !SHIFT_OVER_STATUSES.includes(employee.status) && ACTIVITY_BADGE[employee.activityState]) {
+    return ACTIVITY_BADGE[employee.activityState];
+  }
+  return STATUS_BADGE[employee.status] || STATUS_BADGE.AWAY;
+}
 
 function formatDuration(seconds: number): string {
   const mins = Math.round(seconds / 60);
@@ -37,12 +56,15 @@ function average(employees: EmployeeIdleStatus[], pick: (e: EmployeeIdleStatus) 
  */
 export const IdleTimeView: React.FC = () => {
   const { summary, loading } = useIdleTimeSummary();
+  const { user } = useEmployee();
   const employees = summary?.employees || [];
 
   const avgProductivity = summary?.avgProductivityPercentage ?? 0;
   const avgActiveSeconds = average(employees, (e) => e.activeSeconds);
   const avgIdleSeconds = average(employees, (e) => e.idleSeconds);
-  const totalJabberSeconds = employees.reduce((sum, e) => sum + e.jabberSeconds, 0);
+  const totalCallSeconds = employees.reduce((sum, e) => sum + (e.callSeconds || 0), 0);
+  const totalCalls = employees.reduce((sum, e) => sum + (e.callCount || 0), 0);
+  const spreadsheetLimitSeconds = (summary?.spreadsheetLimitMinutes || 60) * 60;
 
   return (
     <div className="p-8 space-y-6 max-w-7xl mx-auto font-sans select-none">
@@ -55,7 +77,9 @@ export const IdleTimeView: React.FC = () => {
           </div>
           <h1 className="text-2xl font-extrabold text-slate-800 dark:text-white">Idle & Active Time Tracking</h1>
           <p className="text-xs text-slate-400 font-medium mt-0.5">
-            Mouse/keyboard input & active-window tracking — supported dialer time is broken out separately.
+            Call time comes from the dialer's microphone use, not mouse movement. Fake activity (mouse jigglers, auto-input) is
+            counted as idle and flagged as Suspicious. Spreadsheet time (Excel / Google Sheets in use) is part of active
+            time; over {Math.round(spreadsheetLimitSeconds / 60)} min per shift is highlighted and Admin is notified.
           </p>
         </div>
       </div>
@@ -94,12 +118,13 @@ export const IdleTimeView: React.FC = () => {
 
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400">Team Jabber Time</span>
+            <span className="text-xs font-semibold text-slate-400">Team Call Time</span>
             <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/50 rounded-2xl text-indigo-600">
               <PhoneCall className="w-5 h-5" />
             </div>
           </div>
-          <h3 className="text-3xl font-black text-slate-900 dark:text-white mt-4">{formatDuration(totalJabberSeconds)}</h3>
+          <h3 className="text-3xl font-black text-slate-900 dark:text-white mt-4">{formatDuration(totalCallSeconds)}</h3>
+          <p className="text-[11px] text-slate-400 mt-1">{totalCalls} calls · measured from microphone use</p>
         </div>
       </div>
 
@@ -129,6 +154,11 @@ export const IdleTimeView: React.FC = () => {
                   <th className="px-6 py-3 font-bold">Status</th>
                   <th className="px-6 py-3 font-bold">Active</th>
                   <th className="px-6 py-3 font-bold">Idle</th>
+                  <th className="px-6 py-3 font-bold">Calls</th>
+                  <th className="px-6 py-3 font-bold">Call time</th>
+                  <th className="px-6 py-3 font-bold">Unproductive</th>
+                  <th className="px-6 py-3 font-bold">Spreadsheet</th>
+                  <th className="px-6 py-3 font-bold">Suspicious</th>
                   <th className="px-6 py-3 font-bold">Cisco Jabber</th>
                   <th className="px-6 py-3 font-bold">3CX</th>
                   <th className="px-6 py-3 font-bold">Yeastar Linkus Lite</th>
@@ -137,7 +167,8 @@ export const IdleTimeView: React.FC = () => {
               </thead>
               <tbody>
                 {employees.map((employee) => {
-                  const badge = STATUS_BADGE[employee.status] || STATUS_BADGE.AWAY;
+                  const badge = badgeFor(employee);
+                  const tracked = !!employee.hasCallTracking;
                   return (
                     <tr key={employee.employeeId} className="border-b border-slate-50 dark:border-slate-800/60 last:border-0">
                       <td className="px-6 py-4">
@@ -158,6 +189,35 @@ export const IdleTimeView: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
                         {formatDuration(employee.idleSeconds)}
+                      </td>
+                      <td className="px-6 py-4 text-xs font-bold text-slate-800 dark:text-white">
+                        {tracked ? employee.callCount || 0 : '—'}
+                      </td>
+                      <td className="px-6 py-4 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                        {tracked ? formatDuration(employee.callSeconds || 0) : '—'}
+                      </td>
+                      <td className="px-6 py-4 text-xs font-semibold text-orange-600 dark:text-orange-400">
+                        {tracked ? formatDuration(employee.unproductiveSeconds || 0) : '—'}
+                      </td>
+                      <td
+                        className={`px-6 py-4 text-xs font-semibold ${
+                          (employee.spreadsheetSeconds || 0) >= spreadsheetLimitSeconds
+                            ? 'text-rose-600 dark:text-rose-400'
+                            : 'text-slate-600 dark:text-slate-300'
+                        }`}
+                        title="Part of active time - not added on top"
+                      >
+                        {tracked ? formatDuration(employee.spreadsheetSeconds || 0) : '—'}
+                        {tracked && (employee.spreadsheetSeconds || 0) >= spreadsheetLimitSeconds && (
+                          <span className="block text-[10px] font-bold">Over limit</span>
+                        )}
+                      </td>
+                      <td
+                        className={`px-6 py-4 text-xs font-semibold ${
+                          (employee.suspiciousSeconds || 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        {tracked ? formatDuration(employee.suspiciousSeconds || 0) : '—'}
                       </td>
                       <td className="px-6 py-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
                         {formatDuration(employee.jabberSeconds)}
@@ -181,7 +241,8 @@ export const IdleTimeView: React.FC = () => {
       </div>
 
       {/* Camera + input cross-check, per employee (opt-in, see Settings) */}
-      <PresenceVerificationCard />
+      {/* Employee camera: Admin/Boss only (also enforced on the server). */}
+      {(user.permissions || []).includes('camera.view') && <PresenceVerificationCard />}
     </div>
   );
 };

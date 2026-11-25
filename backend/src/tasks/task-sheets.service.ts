@@ -79,7 +79,9 @@ export class TaskSheetsService {
    */
   private permissions(task: TaskForSheet, reqUserId: string, role: string) {
     const isAssignee = task.assignedTo === reqUserId;
-    const isManager = role !== 'EMPLOYEE' && (!isAssignee || task.assignedBy === reqUserId);
+    // Managers, and whoever assigned the sheet (a Team Lead to their agent),
+    // review it - but never the person filling it in, unless self-assigned.
+    const isManager = (role !== 'EMPLOYEE' || task.assignedBy === reqUserId) && (!isAssignee || task.assignedBy === reqUserId);
     return { isAssignee, isManager };
   }
 

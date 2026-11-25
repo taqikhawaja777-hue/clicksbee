@@ -241,9 +241,9 @@ export class EmployeesService implements OnModuleInit {
   /**
    * Fetch all registered employees directly from MongoDB User collection with dynamic Check-In and Online/Offline status
    */
-  async getAllRegisteredEmployees() {
+  async getAllRegisteredEmployees(organizationId?: string) {
     const users = await this.prisma.user.findMany({
-      where: { role: 'EMPLOYEE' },
+      where: { role: 'EMPLOYEE', ...(organizationId ? { organizationId } : {}) },
       select: {
         id: true,
         firstName: true,

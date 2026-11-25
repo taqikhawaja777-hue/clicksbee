@@ -19,6 +19,9 @@
  * - The captured frame is drawn onto an in-memory canvas, fed straight into
  *   detection, and never persisted (no toDataURL, no upload, no IndexedDB).
  *   Only two booleans and a timestamp are ever sent anywhere.
+ *   EXCEPTIONS (explicit product decisions): the manager's live camera card
+ *   (capturePresenceFrame) and the Idle Alert Report (captureIdlePresence -
+ *   one small frame a minute, only while the employee is idle).
  * - Every check first confirms active consent server-side (the backend
  *   also independently enforces this in insert_presence_log) and that
  *   camera monitoring is enabled (globally AND for this employee) before
@@ -281,6 +284,9 @@ export function attachPresencePreview(canvas: HTMLCanvasElement | null): void {
   previewCanvas = canvas;
 }
 
+const CAMERA_FRAME_MAX_WIDTH = 320;
+const CAMERA_FRAME_JPEG_QUALITY = 0.5;
+
 export async function capturePresenceFrame(): Promise<{
   status: 'active' | 'no_camera' | 'permission_denied' | 'error';
   frameData?: string;
@@ -291,15 +297,22 @@ export async function capturePresenceFrame(): Promise<{
     if (!video) {
       return { status: 'no_camera', error: 'No camera attached or access unavailable' };
     }
+    // 320 px wide (same aspect ratio), JPEG 0.5: ~8-15 KB per frame instead
+    // of ~40-60 KB. Frames are relayed through Render every 8s while a
+    // manager has the camera card open (billed outgoing bandwidth), and the
+    // card shows them small anyway.
     const canvas = document.createElement('canvas');
-    canvas.width = Math.min(video.videoWidth || 320, 640);
-    canvas.height = Math.min(video.videoHeight || 240, 480);
+    const sourceWidth = video.videoWidth || 320;
+    const sourceHeight = video.videoHeight || 240;
+    const scale = Math.min(1, CAMERA_FRAME_MAX_WIDTH / sourceWidth);
+    canvas.width = Math.round(sourceWidth * scale);
+    canvas.height = Math.round(sourceHeight * scale);
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       return { status: 'error', error: 'Canvas rendering context unavailable' };
     }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const frameData = canvas.toDataURL('image/jpeg', 0.6);
+    const frameData = canvas.toDataURL('image/jpeg', CAMERA_FRAME_JPEG_QUALITY);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     return { status: 'active', frameData };
   } catch (err: any) {
@@ -309,6 +322,20 @@ export async function capturePresenceFrame(): Promise<{
     }
     return { status: 'error', error: msg || 'Camera capture failed' };
   }
+}
+
+/**
+ * Idle Alert Report (IdleAlertWatcher.tsx): only while the employee is idle
+ * AND camera presence is already running for them, one small frame plus a
+ * face yes/no. This frame IS uploaded - it is shown to Admin only in the
+ * Idle Alert Report (deleted after 30 days). Camera off -> nothing captured.
+ */
+export async function captureIdlePresence(): Promise<{ status: 'PRESENT' | 'AWAY' | 'OFF'; frameData?: string }> {
+  if (!presenceDetectionService.getStatus().isRunning) return { status: 'OFF' };
+  const frame = await capturePresenceFrame();
+  if (frame.status !== 'active' || !frame.frameData) return { status: 'OFF' };
+  const faceDetected = await checkFaceDetected();
+  return { status: faceDetected ? 'PRESENT' : 'AWAY', frameData: frame.frameData };
 }
 
 function drawPresencePreview(

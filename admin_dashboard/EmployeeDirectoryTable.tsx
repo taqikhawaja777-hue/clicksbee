@@ -223,7 +223,7 @@ export const EmployeeDirectoryTable: React.FC = () => {
     if (!editingEmployee) return;
     setIsSavingEdit(true);
     try {
-      const res = await fetch(`${API_ORIGIN}/api/v1/employees/${editingEmployee.id}`, {
+      const res = await apiService.authFetch(`/api/v1/employees/${editingEmployee.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ departmentName: editDept, designation: editDesignation || undefined, isActive: editIsActive }),

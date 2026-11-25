@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { X, Download, ExternalLink, FileText, Loader2 } from 'lucide-react';
-import { API_ORIGIN } from './src/services/api.service';
+import { API_ORIGIN, apiService } from './src/services/api.service';
 
 export const ACCEPTED_DOC_TYPES = '.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.webp';
 
@@ -40,7 +40,9 @@ export const AttachmentPreviewModal: React.FC<{
     let objectUrl: string | null = null;
     setBlobUrl(null);
     setError(null);
-    fetch(absoluteUrl)
+    // Files require a login now (screenshots are Admin-only; attachments are for the organization).
+    apiService
+      .authFetch(absoluteUrl)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.blob();
@@ -70,10 +72,24 @@ export const AttachmentPreviewModal: React.FC<{
 
   if (!attachment) return null;
 
-  const openExternal = () => {
-    const shell = (window as any).require?.('electron')?.shell;
-    if (shell?.openExternal) shell.openExternal(absoluteUrl);
-    else window.open(absoluteUrl, '_blank', 'noopener');
+  // A browser can't open the link itself (it has no login), so save the
+  // already-loaded file to a temp folder and open it with its default app.
+  const openExternal = async () => {
+    if (!blobUrl) return;
+    try {
+      const req = (window as any).require;
+      const fs = req('fs');
+      const os = req('os');
+      const path = req('path');
+      const { shell } = req('electron');
+      const bytes = new Uint8Array(await (await fetch(blobUrl)).arrayBuffer());
+      const safeName = fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_') || 'attachment';
+      const filePath = path.join(os.tmpdir(), `worktrackpro-${Date.now()}-${safeName}`);
+      fs.writeFileSync(filePath, bytes);
+      await shell.openPath(filePath);
+    } catch (err) {
+      console.warn('[AttachmentPreview] Could not open externally:', err);
+    }
   };
 
   const actionClasses =
@@ -101,7 +117,7 @@ export const AttachmentPreviewModal: React.FC<{
               </a>
             )}
             {allowDownload ? (
-              <button type="button" onClick={openExternal} className={actionClasses}>
+              <button type="button" onClick={() => void openExternal()} disabled={!blobUrl} className={actionClasses}>
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>Open externally</span>
               </button>

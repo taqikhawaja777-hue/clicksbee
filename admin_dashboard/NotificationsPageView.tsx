@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Bell, Send, ShieldAlert, CheckCircle2, Clock, Coffee, Camera, ClipboardList, MessageSquare, AlertTriangle, Users, Paperclip, FileText, X } from 'lucide-react';
+import { Bell, Send, ShieldAlert, CheckCircle2, Clock, Coffee, Camera, ClipboardList, MessageSquare, AlertTriangle, Users, Paperclip, FileText, X, PhoneOff } from 'lucide-react';
 import { apiService } from './src/services/api.service';
 import { useEmployee } from './EmployeeContext';
 import { AttachmentPreviewModal, AttachmentChip, AttachmentRef, ACCEPTED_DOC_TYPES } from './AttachmentPreviewModal';
@@ -26,6 +26,8 @@ const ICONS_BY_TYPE: Record<string, React.ComponentType<{ className?: string }>>
   CHECK_IN: CheckCircle2,
   CHECK_OUT: CheckCircle2,
   IDLE_ALERT: Clock,
+  NO_CALL_ALERT: PhoneOff,
+  SUSPICIOUS_ACTIVITY: ShieldAlert,
   LATE_BREAK_RETURN: Coffee,
   WASHROOM_LIMIT: Coffee,
   CAMERA_ANOMALY: Camera,
@@ -41,6 +43,8 @@ const ICONS_BY_TYPE: Record<string, React.ComponentType<{ className?: string }>>
 
 const COLOR_BY_TYPE: Record<string, string> = {
   IDLE_ALERT: 'text-amber-500 bg-amber-500/10',
+  NO_CALL_ALERT: 'text-indigo-500 bg-indigo-500/10',
+  SUSPICIOUS_ACTIVITY: 'text-rose-500 bg-rose-500/10',
   LATE_BREAK_RETURN: 'text-amber-500 bg-amber-500/10',
   WASHROOM_LIMIT: 'text-amber-500 bg-amber-500/10',
   CAMERA_ANOMALY: 'text-rose-500 bg-rose-500/10',

@@ -1,6 +1,6 @@
 """
-Fires the org-wide scheduled break windows: Lunch & Zuhar (13:30-14:10) and
-Tea & Asar (17:00-17:20), Asia/Karachi time, every day. Registered as four
+Fires the org-wide scheduled break window - the only break: 14:00-15:00,
+Asia/Karachi time, every day (no separate tea/Asar break). Registered as
 APScheduler cron jobs in app.main (unconditionally - unlike the Jibble sync
 job, this doesn't depend on any optional config).
 
@@ -22,8 +22,8 @@ from ..services.notify_client import notify_system_event
 logger = logging.getLogger("scheduled_breaks")
 
 BREAK_WINDOWS = [
-    {"key": "LUNCH_ZUHAR", "label": "Lunch & Zuhar", "start": "13:30", "end": "14:10"},
-    {"key": "TEA_ASAR", "label": "Tea & Asar", "start": "17:00", "end": "17:20"},
+    # The key stays LUNCH_ZUHAR (stored break type); the window is the single 2-3 PM break.
+    {"key": "LUNCH_ZUHAR", "label": "Break", "start": "14:00", "end": "15:00"},
 ]
 
 

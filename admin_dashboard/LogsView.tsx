@@ -31,6 +31,8 @@ const ACTION_OPTIONS: { value: string; label: string; color: string }[] = [
   { value: 'TASK_OVERDUE', label: 'Task Overdue', color: 'bg-rose-100/80 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300' },
   { value: 'SCREENSHOT_CAPTURED', label: 'Screenshot Captured', color: 'bg-violet-100/80 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300' },
   { value: 'IDLE_ALERT', label: 'Idle Alert', color: 'bg-orange-100/80 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300' },
+  { value: 'NO_CALL_ALERT', label: 'No Calls (15 min)', color: 'bg-indigo-100/80 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300' },
+  { value: 'SUSPICIOUS_ACTIVITY', label: 'Suspicious Activity', color: 'bg-rose-100/80 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300' },
   { value: 'CAMERA_ANOMALY', label: 'Camera Anomaly', color: 'bg-rose-100/80 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300' },
   { value: 'WASHROOM_LIMIT', label: 'Washroom Limit', color: 'bg-rose-100/80 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300' },
   { value: 'LATE_BREAK_RETURN', label: 'Late Break Return', color: 'bg-rose-100/80 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300' },

@@ -36,7 +36,7 @@ describe('MonitorGateway Presence Camera & Security', () => {
       get: jest.fn().mockReturnValue('mock-jwt-secret'),
     };
 
-    gateway = new MonitorGateway(mockJwtService as any, mockConfigService as any);
+    gateway = new MonitorGateway(mockJwtService as any, mockConfigService as any, {} as any);
     gateway.server = mockServer;
   });
 
@@ -65,7 +65,7 @@ describe('MonitorGateway Presence Camera & Security', () => {
     expect(toEmpCall.payload).toEqual({
       requestId: 'req-123',
       managerSocketId: 'socket-mgr-A',
-      requesterRole: 'MANAGER',
+      requesterRole: 'ADMIN',
       employeeId: 'emp-B',
     });
 
@@ -149,5 +149,76 @@ describe('MonitorGateway Presence Camera & Security', () => {
 
     // Employee room was not messaged
     expect(mockServer.to).not.toHaveBeenCalledWith('user_emp-B');
+  });
+});
+
+/** Live Monitor + employee camera over the socket connection: Admin/Boss only. */
+describe('MonitorGateway access', () => {
+  const accounts: Record<string, any> = {
+    admin: { role: 'ADMIN', designation: null, officeCategory: 'ADMIN', isActive: true },
+    sm: { role: 'EMPLOYEE', designation: 'SM', officeCategory: 'SM', isActive: true },
+    legacySmAdmin: { role: 'ADMIN', designation: 'SM', officeCategory: null, isActive: true },
+    hr: { role: 'MANAGER', designation: 'HR', officeCategory: 'HR', isActive: true },
+  };
+
+  function setup() {
+    const emitted: { room: string | null; event: string }[] = [];
+    const server: any = {
+      to: (room: string) => ({ emit: (event: string) => emitted.push({ room, event }) }),
+      emit: (event: string) => emitted.push({ room: null, event }),
+      sockets: { adapter: { rooms: new Map() } },
+    };
+    const gateway = new MonitorGateway(
+      { verify: (token: string) => ({ sub: token, email: `${token}@x`, role: accounts[token].role, organizationId: 'org' }) } as any,
+      { get: () => 'secret' } as any,
+      { user: { findUnique: async ({ where }: any) => accounts[where.sub ?? where.id] } } as any,
+    );
+    gateway.server = server;
+    return { gateway, emitted };
+  }
+
+  async function connect(gateway: MonitorGateway, who: string) {
+    const clientEmits: { event: string; payload: any }[] = [];
+    const rooms: string[] = [];
+    const client: any = {
+      id: `sock-${who}`,
+      handshake: { auth: { token: who }, headers: {} },
+      data: {},
+      join: (r: string) => rooms.push(r),
+      emit: (event: string, payload: any) => clientEmits.push({ event, payload }),
+    };
+    await gateway.handleConnection(client);
+    return { client, clientEmits, rooms };
+  }
+
+  it('SM (and a legacy SM account with stored role ADMIN) cannot start Live Monitor or open the camera', async () => {
+    for (const who of ['sm', 'legacySmAdmin', 'hr']) {
+      const { gateway, emitted } = setup();
+      const { client, clientEmits } = await connect(gateway, who);
+      gateway.handleManagerSubscribe({ employeeId: 'emp1' }, client);
+      gateway.handleManagerRequestCapture({ employeeId: 'emp1' }, client);
+      gateway.handleManagerRequestPresenceCamera({ employeeId: 'emp1' }, client);
+      expect(emitted.filter((e) => /live_monitor|request_camera_frame/.test(e.event))).toEqual([]);
+      expect(clientEmits.map((e) => e.payload.status || e.event)).toEqual(['manager:unauthorized', 'manager:unauthorized', 'unauthorized']);
+    }
+  });
+
+  it('Admin can start Live Monitor and request the camera', async () => {
+    const { gateway, emitted } = setup();
+    const { client, clientEmits } = await connect(gateway, 'admin');
+    gateway.handleManagerSubscribe({ employeeId: 'emp1' }, client);
+    expect(emitted.some((e) => e.event === 'live_monitor:start')).toBe(true);
+    gateway.server.sockets.adapter.rooms.set('user_emp1', new Set(['x']));
+    gateway.handleManagerRequestPresenceCamera({ employeeId: 'emp1' }, client);
+    expect(emitted.some((e) => e.event === 'employee:request_camera_frame')).toBe(true);
+    expect(clientEmits.some((e) => e.payload?.status === 'unauthorized')).toBe(false);
+  });
+
+  it('only Manager-portal users (Admin, HR) join the shared manager notification feed', async () => {
+    const { gateway } = setup();
+    expect((await connect(gateway, 'admin')).rooms).toContain('admin_org_org');
+    expect((await connect(gateway, 'hr')).rooms).toContain('admin_org_org');
+    expect((await connect(gateway, 'sm')).rooms).not.toContain('admin_org_org');
+    expect((await connect(gateway, 'legacySmAdmin')).rooms).not.toContain('admin_org_org');
   });
 });

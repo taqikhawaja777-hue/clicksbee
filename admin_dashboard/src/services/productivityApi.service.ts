@@ -96,7 +96,29 @@ export type IdleStatus =
   | 'IDLE'
   | 'AWAY';
 
-export interface EmployeeIdleStatus {
+/**
+ * Call/activity breakdown from the desktop activity classifier (app 1.0.11+).
+ * Zero / false for days logged by an older app.
+ */
+export interface CallActivityFields {
+  hasCallTracking?: boolean;
+  /** Real call time: the dialer held the microphone and there was voice. */
+  callSeconds?: number;
+  callCount?: number;
+  /** Real typing/clicking in the dialer between calls, plus after-call notes. */
+  dialingSeconds?: number;
+  otherWorkSeconds?: number;
+  unproductiveSeconds?: number;
+  /** Jiggler / auto-input / frozen screen - counted as idle. */
+  suspiciousSeconds?: number;
+  longestNoCallGapSeconds?: number;
+  /** Excel / Google Sheets in front with mouse or keyboard use - part of active time, not extra. */
+  spreadsheetSeconds?: number;
+  /** ON_CALL | DIALING | OTHER_WORK | UNPRODUCTIVE | IDLE | SUSPICIOUS right now (null when not reporting). */
+  activityState?: string | null;
+}
+
+export interface EmployeeIdleStatus extends CallActivityFields {
   employeeId: string;
   employeeName: string;
   email?: string;
@@ -121,6 +143,8 @@ export interface EmployeeIdleStatus {
 export interface IdleTimeSummary {
   employees: EmployeeIdleStatus[];
   avgProductivityPercentage: number;
+  /** Admin is notified when an employee's spreadsheet time passes this (default 60). */
+  spreadsheetLimitMinutes?: number;
 }
 
 export interface CameraConsent {
@@ -180,7 +204,7 @@ export interface ProductivityWeights {
   callEfficiencyWeight: number;
 }
 
-export interface ShiftSummary {
+export interface ShiftSummary extends CallActivityFields {
   employeeId: string;
   date: string;
   isCheckedIn: boolean;
@@ -248,7 +272,7 @@ export interface ShiftEvent {
 /** One employee, one calendar day - the day-scoped, multi-session-merged
  * figures behind the Attendance/Productivity report PDFs. Mirrors
  * ProductivityService.get_daily_report_row() on the backend. */
-export interface DailyReportRow {
+export interface DailyReportRow extends CallActivityFields {
   employeeId: string;
   employeeName: string;
   date: string;

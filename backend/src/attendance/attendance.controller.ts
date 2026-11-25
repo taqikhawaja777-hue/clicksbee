@@ -8,9 +8,11 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Req,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AttendanceService } from './attendance.service';
+import { hasFlexibleHours } from '../common/access/access.util';
 import { ClockInDto } from './dto/clock-in.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -31,8 +33,10 @@ export class AttendanceController {
     @CurrentUser('id') userId: string,
     @CurrentUser('organizationId') organizationId: string,
     @Body() dto: ClockInDto,
+    @Req() req: any,
   ) {
-    return this.attendanceService.clockIn(userId, organizationId, dto);
+    // Back Office / Validator: recorded automatically at sign-in, any hour.
+    return this.attendanceService.clockIn(userId, organizationId, dto, hasFlexibleHours(req.user));
   }
 
   @ApiOperation({ summary: 'Clock out from work' })
@@ -41,8 +45,9 @@ export class AttendanceController {
   async clockOut(
     @CurrentUser('id') userId: string,
     @CurrentUser('organizationId') organizationId: string,
+    @Req() req: any,
   ) {
-    return this.attendanceService.clockOut(userId, organizationId);
+    return this.attendanceService.clockOut(userId, organizationId, hasFlexibleHours(req.user));
   }
 
   @ApiOperation({ summary: 'Get current user attendance history' })

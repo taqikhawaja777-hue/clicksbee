@@ -42,7 +42,12 @@ const priorityBadgeClasses: Record<Priority, string> = {
  * a third-party look. Assigns by employee email (resolved to a user id
  * server-side) so a manager never needs to know internal IDs.
  */
-export const CreateTaskPanel: React.FC = () => {
+/**
+ * teamMode (Team Lead "Assign Leads"): the assignee is picked from the Team
+ * Lead's own agents only - the server enforces the same rule.
+ */
+export const CreateTaskPanel: React.FC<{ teamMode?: boolean }> = ({ teamMode = false }) => {
+  const [team, setTeam] = useState<{ id: string; name: string; email: string }[]>([]);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [assignedToEmail, setAssignedToEmail] = useState('');
@@ -77,7 +82,13 @@ export const CreateTaskPanel: React.FC = () => {
 
   useEffect(() => {
     loadTasks();
-  }, []);
+    if (teamMode) {
+      apiService
+        .getMyTeam()
+        .then((res: any) => setTeam(res?.data ?? res ?? []))
+        .catch((err) => console.warn('[CreateTaskPanel] Could not load team:', err));
+    }
+  }, [teamMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -143,9 +154,11 @@ export const CreateTaskPanel: React.FC = () => {
           <ClipboardList className="w-3.5 h-3.5" />
           <span>Task Assignment</span>
         </div>
-        <h1 className="text-2xl font-extrabold text-slate-800 dark:text-white">Create a Task</h1>
+        <h1 className="text-2xl font-extrabold text-slate-800 dark:text-white">{teamMode ? 'Assign Leads' : 'Create a Task'}</h1>
         <p className="text-xs text-slate-400 font-medium mt-0.5">
-          Assign work directly to an employee by email — it shows up on their dashboard immediately.
+          {teamMode
+            ? 'Give a lead list (Excel / CSV) or a task to an agent on your team - it shows up in their My Tasks.'
+            : 'Assign work directly to an employee by email — it shows up on their dashboard immediately.'}
         </p>
       </div>
 
@@ -239,18 +252,34 @@ export const CreateTaskPanel: React.FC = () => {
 
         <div>
           <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5">
-            Assign To (Employee Email)
+            {teamMode ? 'Assign To (your agent)' : 'Assign To (Employee Email)'}
           </label>
           <div className="relative">
             <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="email"
-              required
-              value={assignedToEmail}
-              onChange={(e) => setAssignedToEmail(e.target.value)}
-              placeholder="employee@stitchmonitor.com"
-              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-800 dark:text-white focus:outline-none focus:border-indigo-500 transition-colors"
-            />
+            {teamMode ? (
+              <select
+                required
+                value={assignedToEmail}
+                onChange={(e) => setAssignedToEmail(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-800 dark:text-white focus:outline-none focus:border-indigo-500 transition-colors"
+              >
+                <option value="">{team.length ? 'Choose an agent' : 'No agents on your team yet'}</option>
+                {team.map((m) => (
+                  <option key={m.id} value={m.email}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="email"
+                required
+                value={assignedToEmail}
+                onChange={(e) => setAssignedToEmail(e.target.value)}
+                placeholder="employee@stitchmonitor.com"
+                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-800 dark:text-white focus:outline-none focus:border-indigo-500 transition-colors"
+              />
+            )}
           </div>
         </div>
 

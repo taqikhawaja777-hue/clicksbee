@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { getLocalSettings } from './localSettings';
 import { BACKEND_URL } from './serverConfig';
+import { authHeaders } from './authSession';
 import { isBeforeShiftEnd, isScheduledBreakNow } from './idleTimeTracker';
 
 const ARCHIVE_CAPTURE_INTERVAL_MS = 60 * 1000;
@@ -331,6 +332,10 @@ export function startAutomatedScreenCaptureLoop(intervalMs: number = ARCHIVE_CAP
  */
 // Capture screenshot and request LLM Vision analysis every 2 minutes (120,000 ms)
 const LIVE_VISION_INTERVAL_MS = 2 * 60 * 1000;
+const LIVE_VISION_JPEG_QUALITY = 60;
+const IDLE_REPORT_WIDTH = 1600;
+const IDLE_REPORT_HEIGHT = 900;
+const IDLE_REPORT_JPEG_QUALITY = 60;
 
 async function captureAndAnalyzeForLiveMonitor(forceEmployeeId?: string): Promise<void> {
   const targetId = forceEmployeeId || currentEmployeeContext?.id;
@@ -343,11 +348,16 @@ async function captureAndAnalyzeForLiveMonitor(forceEmployeeId?: string): Promis
     });
     if (!sources || sources.length === 0) return;
 
-    const imageBase64 = sources[0].thumbnail.toDataURL();
-    console.log(`[CaptureService] Requesting on-demand LLM Vision analysis for ${targetId}...`);
+    // JPEG instead of PNG, same 1280x720 resolution: ~100 KB instead of
+    // 0.4-2 MB. Render re-sends this image to Gemini (billed outgoing
+    // bandwidth), and the text stays just as readable for the summary.
+    const imageBase64 = `data:image/jpeg;base64,${sources[0].thumbnail.toJPEG(LIVE_VISION_JPEG_QUALITY).toString('base64')}`;
+    console.log(
+      `[CaptureService] Requesting on-demand LLM Vision analysis for ${targetId} (${Math.round(imageBase64.length / 1024)} KB)...`,
+    );
     const response = await fetch(`${BACKEND_URL}/api/v1/monitor/analyze`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         employeeId: targetId,
         imageBase64,
@@ -420,6 +430,24 @@ export function registerCaptureIpcHandlers(): void {
   ipcMain.handle('trigger-live-vision-capture-now', async (_event, targetEmployeeId?: string) => {
     await captureAndAnalyzeForLiveMonitor(targetEmployeeId);
     return { success: true };
+  });
+
+  // Idle Alert Report (IdleAlertWatcher.tsx, once a minute while idle only):
+  // one JPEG large enough to read on the report's full-page view; the AI
+  // summary is made from the same image.
+  ipcMain.handle('capture-idle-screenshot', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: IDLE_REPORT_WIDTH, height: IDLE_REPORT_HEIGHT },
+      });
+      if (!sources?.length) return { success: false };
+      const jpeg = sources[0].thumbnail.toJPEG(IDLE_REPORT_JPEG_QUALITY);
+      return { success: true, screenshot: `data:image/jpeg;base64,${jpeg.toString('base64')}` };
+    } catch (err) {
+      console.warn('[CaptureService] Idle report screenshot failed:', err);
+      return { success: false };
+    }
   });
 
   ipcMain.handle('clear-monitor-employee-context', async () => {

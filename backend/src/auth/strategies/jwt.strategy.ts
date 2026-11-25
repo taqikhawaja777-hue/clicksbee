@@ -3,6 +3,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { categoryOf } from '../../common/access/access.util';
 
 export interface JwtPayload {
   sub: string;
@@ -41,6 +42,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         isActive: true,
         avatar: true,
         employeeCode: true,
+        designation: true,
+        officeCategory: true,
       },
     });
 
@@ -48,6 +51,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User account is inactive or no longer exists');
     }
 
-    return user;
+    // Read fresh from the database on every request: a category change by
+    // Admin takes effect immediately, not when the token expires.
+    return { ...user, category: categoryOf(user) };
   }
 }

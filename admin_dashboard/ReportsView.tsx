@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useEmployee } from './EmployeeContext';
 import { 
   AreaChart, 
   Area, 
@@ -12,13 +13,13 @@ import {
   Download, 
   CheckCircle2, 
   TrendingUp, 
-  Camera,
+  AlarmClock,
   ChevronDown,
   Calendar
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { apiService } from './src/services/api.service';
+import { apiService, IdleReportEpisode } from './src/services/api.service';
 import { mongoTrackingApiService, DailyReportRow } from './src/services/mongoTrackingApi.service';
 
 export interface MonthlyReportPoint {
@@ -29,13 +30,17 @@ export interface MonthlyReportPoint {
 const currentYear = new Date().getFullYear();
 
 export const ReportsView: React.FC = () => {
+  // Each report needs its permission (server enforces it too): Attendance - Admin/HR/SM;
+  // Productivity & dialer - Admin/SM; Idle Alert (screenshots + camera) - Admin only.
+  const { user: reportUser } = useEmployee();
+  const canReport = (p: string) => (reportUser.permissions ? reportUser.permissions.includes(p as any) : reportUser.role === 'MANAGER');
   const [chartData, setChartData] = useState<MonthlyReportPoint[]>([]);
   const [chartLoading, setChartLoading] = useState<boolean>(true);
 
   // Range selection states for the 3 download cards
   const [attendanceRange, setAttendanceRange] = useState<string>('Monthly');
   const [productivityRange, setProductivityRange] = useState<string>('Monthly');
-  const [screenshotRange, setScreenshotRange] = useState<string>('Daily');
+  const [idleAlertRange, setIdleAlertRange] = useState<string>('Daily');
   // Which report is currently fetching data for its PDF, if any - disables
   // that card's button and shows a brief loading label, since downloading
   // now involves a real network round-trip before doc.save() instead of
@@ -113,13 +118,15 @@ export const ReportsView: React.FC = () => {
     setDownloadingReport(reportType);
     try {
       const { startDate, endDate } = getDateRangeForPeriod(range);
-      const doc = new jsPDF();
+      // The productivity report has 15 columns - landscape so they fit.
+      const isWide = reportType === 'Productivity Report';
+      const doc = isWide ? new jsPDF({ orientation: 'landscape' }) : new jsPDF();
       const nowStr = new Date().toLocaleString();
       const todayStr = formatKarachiDate(new Date());
 
       // WorkTrackPro Corporate Banner Header
       doc.setFillColor(79, 70, 229); // Indigo 600
-      doc.rect(0, 0, 210, 28, 'F');
+      doc.rect(0, 0, doc.internal.pageSize.getWidth(), 28, 'F');
 
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(16);
@@ -160,32 +167,35 @@ export const ReportsView: React.FC = () => {
           r.attendanceStatus,
         ]);
       } else if (reportType === 'Productivity Report') {
-        const { rows } = await mongoTrackingApiService.getProductivityReport(startDate, endDate);
+        const { rows, spreadsheetLimitMinutes } = await mongoTrackingApiService.getProductivityReport(startDate, endDate);
+        const sheetLimit = (spreadsheetLimitMinutes || 60) * 60;
         const present = rows.filter((r: DailyReportRow) => r.attendanceStatus === 'PRESENT');
-        headers = ['Employee Name', 'Date', 'Activity Tracking', 'Active', 'Idle', 'Productivity %', 'Cisco Jabber', '3CX', 'Yeastar Linkus Lite', 'Camera-Confirmed'];
-        body = present.map((r: DailyReportRow) => [
-          r.employeeName,
-          r.date,
-          r.hasActivitySnapshot ? 'Captured' : 'Not captured',
-          r.hasActivitySnapshot ? formatHM(r.activeSeconds) : '—',
-          r.hasActivitySnapshot ? formatHM(r.idleSeconds) : '—',
-          r.hasActivitySnapshot ? `${r.productivityPercentage}%` : '—',
-          r.hasActivitySnapshot ? formatHM(r.jabberSeconds) : '—',
-          r.hasActivitySnapshot ? formatHM(r.threeCxSeconds) : '—',
-          r.hasActivitySnapshot ? formatHM(r.yeastarSeconds) : '—',
-          r.hasActivitySnapshot ? formatHM(r.cameraActiveSeconds) : '—',
-        ]);
-      } else if (reportType === 'Screenshot Report') {
-        const query = new URLSearchParams({ startDate, endDate, limit: '5000' });
-        const data = await apiService.get<{ data: any[] }>(`/screenshots?${query.toString()}`);
-        const list = data?.data || [];
-        headers = ['Employee Name', 'Date', 'Time Captured', 'Active Window'];
-        body = list.map((s: any) => [
-          s.user ? `${s.user.firstName} ${s.user.lastName}`.trim() : 'Unknown',
-          formatKarachiDate(new Date(s.capturedAt)),
-          new Date(s.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          s.activeWindowName || '—',
-        ]);
+        headers = [
+          'Employee Name', 'Date', 'Activity Tracking', 'Active', 'Idle', 'Productivity %',
+          'Calls', 'Call Time', 'Dialing', 'Longest No-Call Gap', 'Unproductive', 'Spreadsheet (in Active)', 'Suspicious',
+          'Cisco Jabber', '3CX', 'Yeastar Linkus Lite',
+        ];
+        body = present.map((r: DailyReportRow) => {
+          const calls = r.hasActivitySnapshot && r.hasCallTracking;
+          return [
+            r.employeeName,
+            r.date,
+            r.hasActivitySnapshot ? 'Captured' : 'Not captured',
+            r.hasActivitySnapshot ? formatHM(r.activeSeconds) : '—',
+            r.hasActivitySnapshot ? formatHM(r.idleSeconds) : '—',
+            r.hasActivitySnapshot ? `${r.productivityPercentage}%` : '—',
+            calls ? String(r.callCount || 0) : '—',
+            calls ? formatHM(r.callSeconds || 0) : '—',
+            calls ? formatHM(r.dialingSeconds || 0) : '—',
+            calls ? formatHM(r.longestNoCallGapSeconds || 0) : '—',
+            calls ? formatHM(r.unproductiveSeconds || 0) : '—',
+            calls ? `${formatHM(r.spreadsheetSeconds || 0)}${(r.spreadsheetSeconds || 0) >= sheetLimit ? ' (over limit)' : ''}` : '—',
+            calls ? formatHM(r.suspiciousSeconds || 0) : '—',
+            r.hasActivitySnapshot ? formatHM(r.jabberSeconds) : '—',
+            r.hasActivitySnapshot ? formatHM(r.threeCxSeconds) : '—',
+            r.hasActivitySnapshot ? formatHM(r.yeastarSeconds) : '—',
+          ];
+        });
       }
 
       if (body.length === 0) {
@@ -199,7 +209,7 @@ export const ReportsView: React.FC = () => {
           body: body,
           theme: 'striped',
           headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold' },
-          styles: { fontSize: 8, cellPadding: 3 },
+          styles: isWide ? { fontSize: 6.5, cellPadding: 2 } : { fontSize: 8, cellPadding: 3 },
         });
       }
 
@@ -214,6 +224,193 @@ export const ReportsView: React.FC = () => {
       doc.save(`${reportType.toLowerCase().replace(/\s+/g, '_')}_${range.toLowerCase()}_${todayStr}.pdf`);
     } catch (e) {
       console.error(`Failed to generate ${reportType}:`, e);
+    } finally {
+      setDownloadingReport(null);
+    }
+  };
+
+  const karachiClock = (iso: string): string =>
+    new Date(iso).toLocaleTimeString('en-US', { timeZone: 'Asia/Karachi', hour: 'numeric', minute: '2-digit' });
+
+  const CAMERA_LABELS: Record<string, string> = { PRESENT: 'At desk', AWAY: 'Away from desk', OFF: 'Camera off' };
+
+  /**
+   * Idle Alert Report: every idle period of every employee in the range, with
+   * the AI summary of what the screen showed, a per-minute list, and small
+   * screenshots + camera pictures. Only idle time is ever captured.
+   */
+  const generateIdleAlertPdf = async (range: string) => {
+    const reportType = 'Idle Alert Report';
+    setDownloadingReport(reportType);
+    try {
+      const { startDate, endDate } = getDateRangeForPeriod(range);
+      const report = (await apiService.getIdleReport(startDate, endDate))?.data;
+      const episodes: IdleReportEpisode[] = [...(report?.episodes || [])].sort(
+        (a, b) => a.employeeName.localeCompare(b.employeeName) || a.idleSince.localeCompare(b.idleSince),
+      );
+
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const bottom = 280;
+      let y = 0;
+      // Each small screenshot links to a full-page view added at the end.
+      const fullViews: {
+        alias: string;
+        screenshot: string | null;
+        camera: string | null;
+        title: string;
+        fromPage: number;
+        box: [number, number, number, number];
+      }[] = [];
+      const ensureSpace = (needed: number) => {
+        if (y + needed > bottom) {
+          doc.addPage();
+          y = 18;
+        }
+      };
+
+      doc.setFillColor(79, 70, 229);
+      doc.rect(0, 0, pageWidth, 28, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.text('WorkTrackPro Supervisor Report', 14, 18);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Generated: ${new Date().toLocaleString()}`, 145, 18);
+
+      doc.setTextColor(30, 41, 59);
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${reportType} (${range} View)`, 14, 38);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 116, 139);
+      const totalIdle = episodes.reduce((sum, e) => sum + e.idleSeconds, 0);
+      doc.text(
+        `Scope: ${startDate} to ${endDate}  |  ${episodes.length} idle period(s)  |  Total idle ${formatHM(totalIdle)}  |  All employees`,
+        14, 44,
+      );
+      y = 50;
+      if (report?.imagesLimited) {
+        doc.text('Large range: pictures are included for the newest 100 idle periods only; the rest are text only.', 14, y);
+        y += 6;
+      }
+
+      if (episodes.length === 0) {
+        doc.setFontSize(10);
+        doc.text('No idle periods recorded for this date range.', 14, y + 6);
+      }
+
+      for (const ep of episodes) {
+        ensureSpace(40);
+        doc.setFillColor(241, 245, 249);
+        doc.rect(14, y, pageWidth - 28, 12, 'F');
+        doc.setTextColor(30, 41, 59);
+        doc.setFontSize(10.5);
+        doc.setFont('helvetica', 'bold');
+        doc.text(ep.employeeName, 17, y + 7.8);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        const when = `${formatKarachiDate(new Date(ep.idleSince))}  -  Idle ${karachiClock(ep.idleSince)} to ${karachiClock(ep.endedAt)}  (${formatHM(ep.idleSeconds)})${ep.stillOpen ? '  - ended by break/sign-out' : ''}`;
+        doc.text(when, pageWidth - 17, y + 7.8, { align: 'right' });
+        y += 16;
+
+        doc.setFontSize(9);
+        doc.setTextColor(51, 65, 85);
+        const summaryLines: string[] = doc.splitTextToSize(`Summary: ${ep.summary}`, pageWidth - 28);
+        ensureSpace(summaryLines.length * 4.5);
+        doc.text(summaryLines, 14, y);
+        y += summaryLines.length * 4.5 + 1;
+
+        autoTable(doc, {
+          startY: y,
+          head: [['Time', 'Camera', 'What the screen showed (AI)']],
+          body: ep.captures.map((c) => [
+            karachiClock(c.capturedAt),
+            CAMERA_LABELS[c.cameraStatus] || c.cameraStatus,
+            c.summary || 'AI summary not available',
+          ]),
+          theme: 'striped',
+          headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold' },
+          styles: { fontSize: 7.5, cellPadding: 1.8 },
+          columnStyles: { 0: { cellWidth: 20 }, 1: { cellWidth: 28 } },
+          margin: { left: 14, right: 14 },
+        });
+        y = (doc as any).lastAutoTable.finalY + 4;
+
+        const pictures = ep.captures.filter((c) => c.screenshot || c.camera);
+        if (pictures.length > 0) {
+          const shotW = 58;
+          const shotH = 32.6;
+          const camW = 24;
+          const camH = 18;
+          ensureSpace(shotH + camH + 16);
+          pictures.slice(0, 3).forEach((c, i) => {
+            const x = 14 + i * 62;
+            const label = `${karachiClock(c.capturedAt)} - ${CAMERA_LABELS[c.cameraStatus] || c.cameraStatus}`;
+            const alias = `idle-${ep.id}-${i}`;
+            doc.setFontSize(7.5);
+            doc.setTextColor(100, 116, 139);
+            doc.text(label, x, y + 3);
+            try {
+              if (c.screenshot) doc.addImage(c.screenshot, 'JPEG', x, y + 5, shotW, shotH, `${alias}-shot`);
+              if (c.camera) doc.addImage(c.camera, 'JPEG', x, y + 7 + shotH, camW, camH, `${alias}-cam`);
+            } catch (err) {
+              console.warn('[IdleAlertReport] Could not add a picture:', err);
+            }
+            doc.setFontSize(7);
+            doc.setTextColor(79, 70, 229);
+            doc.text('Click picture to view full page', x + camW + 3, y + 7 + shotH + 4);
+            fullViews.push({
+              alias,
+              screenshot: c.screenshot,
+              camera: c.camera,
+              title: `${ep.employeeName}  -  ${formatKarachiDate(new Date(c.capturedAt))} ${label}`,
+              fromPage: doc.getCurrentPageInfo().pageNumber,
+              box: [x, y + 5, shotW, shotH + 2 + camH],
+            });
+          });
+          y += shotH + camH + 16;
+        }
+        y += 4;
+      }
+
+      // Full-page views (landscape), reusing the same embedded images by alias.
+      for (const view of fullViews) {
+        doc.addPage('a4', 'landscape');
+        const page = doc.getCurrentPageInfo().pageNumber;
+        const w = doc.internal.pageSize.getWidth();
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 41, 59);
+        doc.text(view.title, 10, 11);
+        doc.setFont('helvetica', 'normal');
+        try {
+          if (view.screenshot) doc.addImage(view.screenshot, 'JPEG', 10, 15, w - 20, ((w - 20) * 9) / 16, `${view.alias}-shot`);
+          if (view.camera) doc.addImage(view.camera, 'JPEG', w - 52, 172, 42, 31.5, `${view.alias}-cam`);
+        } catch (err) {
+          console.warn('[IdleAlertReport] Could not add a full-page picture:', err);
+        }
+        doc.setFontSize(10);
+        doc.setTextColor(79, 70, 229);
+        doc.textWithLink('<  Back to report', 10, 180, { pageNumber: view.fromPage });
+        doc.setPage(view.fromPage);
+        doc.link(...view.box, { pageNumber: page });
+        doc.setPage(page);
+      }
+
+      const pageCount = (doc as any).internal.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184);
+        doc.text(`WorkTrackPro Confidential Audit Log — Page ${i} of ${pageCount}`, 14, doc.internal.pageSize.getHeight() - 7);
+      }
+
+      doc.save(`idle_alert_report_${range.toLowerCase()}_${formatKarachiDate(new Date())}.pdf`);
+    } catch (e) {
+      console.error('Failed to generate Idle Alert Report:', e);
     } finally {
       setDownloadingReport(null);
     }
@@ -332,8 +529,9 @@ export const ReportsView: React.FC = () => {
             </div>
 
             <button
+              disabled={downloadingReport !== null || !canReport('attendance.reports')}
+              title={canReport('attendance.reports') ? undefined : 'Not available for your role'}
               onClick={() => generatePdfReport('Attendance Report', attendanceRange)}
-              disabled={downloadingReport !== null}
               className="px-3.5 py-2 bg-[#10b981] hover:bg-[#059669] disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold text-xs rounded-xl flex items-center space-x-1.5 shadow-md shadow-emerald-500/20 transition-all active:scale-98 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
@@ -374,8 +572,9 @@ export const ReportsView: React.FC = () => {
             </div>
 
             <button
+              disabled={downloadingReport !== null || !canReport('dialer.reports')}
+              title={canReport('dialer.reports') ? undefined : 'Not available for your role'}
               onClick={() => generatePdfReport('Productivity Report', productivityRange)}
-              disabled={downloadingReport !== null}
               className="px-3.5 py-2 bg-[#534bf3] hover:bg-[#4338ca] disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold text-xs rounded-xl flex items-center space-x-1.5 shadow-md shadow-indigo-500/20 transition-all active:scale-98 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
@@ -384,18 +583,18 @@ export const ReportsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 3: Screenshot Report */}
+        {/* Card 3: Idle Alert Report (replaced the Screenshot Report) */}
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm flex flex-col justify-between space-y-4">
           <div className="space-y-3">
             <div className="w-11 h-11 rounded-2xl bg-cyan-50 dark:bg-cyan-950/60 text-cyan-500 flex items-center justify-center border border-cyan-100 dark:border-cyan-900/50">
-              <Camera className="w-6 h-6" />
+              <AlarmClock className="w-6 h-6" />
             </div>
             <div>
               <h3 className="font-extrabold text-base text-slate-900 dark:text-white">
-                Screenshot Report
+                Idle Alert Report
               </h3>
               <p className="text-xs text-slate-400 font-medium mt-1 leading-relaxed">
-                All captured screenshot audit logs
+                Every idle period: AI summary of the screen, screenshots & camera pictures
               </p>
             </div>
           </div>
@@ -403,25 +602,25 @@ export const ReportsView: React.FC = () => {
           <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
             <div className="relative">
               <select
-                value={screenshotRange}
-                onChange={(e) => setScreenshotRange(e.target.value)}
+                value={idleAlertRange}
+                onChange={(e) => setIdleAlertRange(e.target.value)}
                 className="appearance-none pl-3 pr-7 py-1.5 bg-slate-100 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
               >
                 <option value="Daily">Daily</option>
                 <option value="Weekly">Weekly</option>
                 <option value="Monthly">Monthly</option>
-                <option value="Annually">Annually</option>
               </select>
               <ChevronDown className="w-3 h-3 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
 
             <button
-              onClick={() => generatePdfReport('Screenshot Report', screenshotRange)}
-              disabled={downloadingReport !== null}
+              disabled={downloadingReport !== null || !canReport('screenshots.view')}
+              title={canReport('screenshots.view') ? undefined : 'Not available for your role'}
+              onClick={() => generateIdleAlertPdf(idleAlertRange)}
               className="px-3.5 py-2 bg-[#06b6d4] hover:bg-[#0891b2] disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold text-xs rounded-xl flex items-center space-x-1.5 shadow-md shadow-cyan-500/20 transition-all active:scale-98 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>{downloadingReport === 'Screenshot Report' ? 'Generating…' : 'Download PDF'}</span>
+              <span>{downloadingReport === 'Idle Alert Report' ? 'Generating…' : 'Download PDF'}</span>
             </button>
           </div>
         </div>

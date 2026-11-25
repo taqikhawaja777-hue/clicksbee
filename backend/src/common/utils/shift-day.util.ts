@@ -3,10 +3,9 @@ const KARACHI_OFFSET_MS = 5 * 60 * 60 * 1000;
 export const SHIFT_START_MINUTES_OF_DAY = 10 * 60;
 export const SHIFT_END_MINUTES_OF_DAY = 19 * 60;
 
-// The paid schedule is nine clock hours, with one hour of automatic breaks.
+// The paid schedule is nine clock hours with one break: 2:00 PM - 3:00 PM (no other breaks).
 export const SCHEDULED_BREAKS = [
-  { label: 'Lunch & Zuhr Prayer', startMinutes: 13 * 60 + 30, endMinutes: 14 * 60 + 10 },
-  { label: 'Tea & Asar Prayer', startMinutes: 17 * 60, endMinutes: 17 * 60 + 20 },
+  { label: 'Break', startMinutes: 14 * 60, endMinutes: 15 * 60 },
 ] as const;
 
 function karachiWallClock(d: Date): Date {

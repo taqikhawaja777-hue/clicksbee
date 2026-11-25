@@ -14,7 +14,7 @@ import {
   Check
 } from 'lucide-react';
 import { mongoTrackingApiService } from './src/services/mongoTrackingApi.service';
-import { API_ORIGIN } from './src/services/api.service';
+import { API_ORIGIN, apiService } from './src/services/api.service';
 import { getShiftDayKey } from './src/utils/shiftDay';
 
 export interface MonthlyAttendancePoint {
@@ -59,7 +59,7 @@ export const ManagerAttendanceView: React.FC = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const empRes = await fetch(`${API_ORIGIN}/api/v1/employees/all`);
+        const empRes = await apiService.authFetch(`/api/v1/employees/all`);
         const empJson = await empRes.json();
         const employeesList: any[] = empJson?.data?.data || [];
         const departmentByName = new Map(employeesList.map((e) => [e.name, e.department] as const));

@@ -11,6 +11,7 @@ import { StreamableFile } from '@nestjs/common';
 import { AiVisionEvaluatorService } from '../services/aiVisionEvaluator';
 import * as fs from 'fs';
 import * as path from 'path';
+import { can } from '../common/access/access.util';
 
 const MIME_BY_EXT: Record<string, string> = {
   '.pdf': 'application/pdf',
@@ -143,10 +144,31 @@ export class ScreenshotsService {
   }
 
   /**
+   * /file/* serves both screenshots and task/message attachments (same
+   * storage). Screenshots need screenshots.view (Admin/Boss); an attachment
+   * lives under screenshots/<organizationId>/... and is open to signed-in
+   * members of that organization only.
+   */
+  async assertFileAccess(relativePath: string, user: any): Promise<void> {
+    const clean = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const isScreenshot = await this.prisma.screenshot.findFirst({
+      where: { OR: [{ filePath: clean }, { fileUrl: { endsWith: encodeURIComponent(clean) } }] },
+      select: { id: true },
+    });
+    const orgSegment = clean.split('/')[1];
+    if (isScreenshot || orgSegment !== user?.organizationId) {
+      if (!can(user, 'screenshots.view')) {
+        throw new ForbiddenException('Screenshots are visible to Admin only');
+      }
+    }
+  }
+
+  /**
    * Fetch Screenshots Feed from MongoDB Collection
    */
-  async getFeedRecords() {
+  async getFeedRecords(organizationId: string) {
     const list = await this.prisma.screenshot.findMany({
+      where: { organizationId },
       take: 50,
       orderBy: { capturedAt: 'desc' },
       include: {

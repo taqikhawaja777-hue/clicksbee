@@ -36,13 +36,13 @@ describe('Productivity Calculation Engine', () => {
       expect(result.idlePenaltyPoints).toBe(73);
       expect(result.complianceScore).toBe(27);
 
-      // New Formula: 90% App Focus + 5% Compliance + 5% Attendance
-      // 0.90 * 31.9 + 0.05 * 27 + 0.05 * 73 = 28.71 + 1.35 + 3.65 = 33.71 -> 33.7%
-      expect(result.overallProductivityPercentage).toBe(33.7);
-      expect(result.productivityPercentage).toBe(33.7);
+      // Formula: 95% App Focus + 5% Compliance (attendance no longer weighted)
+      // 0.95 * 31.9 + 0.05 * 27 = 30.305 + 1.35 = 31.655 -> 31.7%
+      expect(result.overallProductivityPercentage).toBe(31.7);
+      expect(result.productivityPercentage).toBe(31.7);
       expect(result.weightsUsed).toEqual({
-        attendanceWeight: 5,
-        appFocusWeight: 90,
+        attendanceWeight: 0,
+        appFocusWeight: 95,
         complianceWeight: 5,
         callEfficiencyWeight: 0,
       });
@@ -63,8 +63,8 @@ describe('Productivity Calculation Engine', () => {
       expect(result.appFocusScore).toBe(0);
       expect(result.attendanceRatio).toBe(50);
       expect(result.complianceScore).toBe(100);
-      // 90% * 0 + 5% * 100 + 5% * 50 = 0 + 5 + 2.5 = 7.5%
-      expect(result.overallProductivityPercentage).toBe(7.5);
+      // 95% * 0 + 5% * 100 = 5%
+      expect(result.overallProductivityPercentage).toBe(5);
     });
   });
 

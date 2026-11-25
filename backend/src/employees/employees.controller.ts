@@ -8,17 +8,26 @@ import {
   Query,
   Body,
   Req,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PermissionsGuard, RequirePermission } from '../common/access/permissions.guard';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto, UpdateEmployeeDto } from './dto/employee.dto';
 
+// Login required for everything; managers (Admin/HR) manage, SM may list
+// for report filters. Previously this whole controller had no guard at all.
 @ApiTags('Employees')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermission('managerPortal')
 @Controller('employees')
 export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
 
   @ApiOperation({ summary: 'Get all registered employees directly from MongoDB' })
+  @RequirePermission('managerPortal', 'productivity.all', 'loginRecords.view')
   @Get()
   async getEmployees(
     @Req() req: any,
@@ -42,10 +51,11 @@ export class EmployeesController {
     );
   }
 
-  @ApiOperation({ summary: 'Get all registered employees (Public Dashboard)' })
+  @ApiOperation({ summary: 'Get all registered employees of your organization' })
+  @RequirePermission('managerPortal', 'productivity.all', 'loginRecords.view')
   @Get('all')
-  async getAllRegisteredEmployees() {
-    return this.employeesService.getAllRegisteredEmployees();
+  async getAllRegisteredEmployees(@Req() req: any) {
+    return this.employeesService.getAllRegisteredEmployees(req.user.organizationId);
   }
 
   @ApiOperation({ summary: 'Create new employee' })
@@ -102,13 +112,15 @@ export class EmployeesController {
 
   @ApiOperation({ summary: 'Check in employee' })
   @Post(':id/check-in')
-  async checkInEmployee(@Param('id') id: string) {
+  async checkInEmployee(@Param('id') id: string, @Req() req: any) {
+    await this.employeesService.getEmployeeById(id, req.user.organizationId);
     return this.employeesService.checkInEmployee(id);
   }
 
   @ApiOperation({ summary: 'Check out employee' })
   @Post(':id/check-out')
-  async checkOutEmployee(@Param('id') id: string) {
+  async checkOutEmployee(@Param('id') id: string, @Req() req: any) {
+    await this.employeesService.getEmployeeById(id, req.user.organizationId);
     return this.employeesService.checkOutEmployee(id);
   }
 

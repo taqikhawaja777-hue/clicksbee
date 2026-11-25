@@ -4,6 +4,8 @@ import { VisionAnalysisResult } from './groq-vision.service';
 
 export type { VisionAnalysisResult };
 
+const GEMINI_TIMEOUT_MS = 30_000;
+
 /**
  * Same role as GroqVisionService (identical VisionAnalysisResult shape,
  * so monitor.service.ts didn't need to change beyond which service it
@@ -33,7 +35,15 @@ export class GeminiVisionService {
     this.visionModel = this.configService.get<string>('GEMINI_VISION_MODEL') || 'gemini-flash-lite-latest';
   }
 
+  /** Gemini occasionally answers with a few characters and no JSON - ask once more before giving up. */
   async analyzeScreenshot(imageBase64: string, departmentContext?: string): Promise<VisionAnalysisResult | null> {
+    const first = await this.analyzeOnce(imageBase64, departmentContext);
+    if (first || !this.apiKey) return first;
+    this.logger.warn('[GeminiVision] No usable analysis - retrying once');
+    return this.analyzeOnce(imageBase64, departmentContext);
+  }
+
+  private async analyzeOnce(imageBase64: string, departmentContext?: string): Promise<VisionAnalysisResult | null> {
     // Retained only as the shared response shape documentation. It is never
     // returned: failures below return null so mock data cannot reach a user.
     const defaultResult: VisionAnalysisResult = {
@@ -84,6 +94,8 @@ export class GeminiVisionService {
         `https://generativelanguage.googleapis.com/v1beta/models/${this.visionModel}:generateContent?key=${this.apiKey}`,
         {
           method: 'POST',
+          // A stalled request would otherwise hang forever (and skip the retry).
+          signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [

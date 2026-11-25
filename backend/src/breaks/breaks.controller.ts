@@ -13,10 +13,13 @@ import { BreaksService } from './breaks.service';
 import { StartBreakDto, EndBreakDto } from './dto/break.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '@prisma/client';
 
 @ApiTags('Breaks')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('breaks')
 export class BreaksController {
   constructor(private readonly breaksService: BreaksService) {}
@@ -52,6 +55,7 @@ export class BreaksController {
   }
 
   @ApiOperation({ summary: 'Get user break history' })
+  @Roles(Role.ADMIN, Role.MANAGER)
   @Get('user/:userId')
   async getUserBreaks(
     @Param('userId') targetUserId: string,

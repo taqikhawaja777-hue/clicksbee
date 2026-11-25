@@ -29,6 +29,9 @@ import { SyncModule } from './sync/sync.module';
 import { TasksCleanupModule } from './common/tasks/tasks.module';
 import { ConsentModule } from './consent/consent.module';
 import { MonitorModule } from './monitor/monitor.module';
+import { AccessControlModule } from './access-control/access-control.module';
+import { IdleReportsModule } from './idle-reports/idle-reports.module';
+import { LeadSheetsModule } from './lead-sheets/lead-sheets.module';
 import { AiAnalyticsController } from './controllers/aiAnalyticsController';
 import { HealthController } from './health.controller';
 
@@ -71,6 +74,9 @@ import { HealthController } from './health.controller';
     LiveModule,
     SyncModule,
     TasksCleanupModule,
+    AccessControlModule,
+    IdleReportsModule,
+    LeadSheetsModule,
     ConsentModule,
     MonitorModule,
   ],

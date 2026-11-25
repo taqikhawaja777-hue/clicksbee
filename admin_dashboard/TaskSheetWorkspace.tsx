@@ -26,8 +26,40 @@ import {
 const PAGE_SIZE = 100;
 const AUTOSAVE_MS = 60_000;
 
-/** Numbers (phone, account, amount) may be copied; anything containing letters - names, addresses - may not. */
+/** Numbers only - anything containing letters (names, addresses, EIDs like "DX0163...") is never copyable. */
 export const isCopyableValue = (value: string): boolean => /\d/.test(value) && !/\p{L}/u.test(value);
+
+// UAE mobile: 5XXXXXXXX, 05XXXXXXXX, 9715XXXXXXXX, +971 5X XXX XXXX, 009715XXXXXXXX.
+const UAE_MOBILE = /^(?:\+?971|00971|0)?5\d{8}$/;
+const PHONE_HEADER = /phone|mobile|contact|cell|msisdn|whats\s*app|\btel\b/i;
+
+export const isPhoneValue = (value: string): boolean => UAE_MOBILE.test(value.replace(/[\s\-().]/g, ''));
+
+/**
+ * The columns an assignee may copy from: phone numbers only. A column counts
+ * when its header says so ("Phone", "Mobile", "Contact"... never "Line ...")
+ * or when most of its values are mobile numbers. Line numbers, EIDs and
+ * every other column stay locked.
+ */
+export function phoneColumns(header: string[], rows: string[][]): Set<number> {
+  const out = new Set<number>();
+  header.forEach((h, c) => {
+    if (PHONE_HEADER.test(h) && !/line/i.test(h)) {
+      out.add(c);
+      return;
+    }
+    let filled = 0;
+    let phones = 0;
+    for (const row of rows.slice(0, 500)) {
+      const v = (row[c] ?? '').trim();
+      if (!v) continue;
+      filled++;
+      if (isPhoneValue(v)) phones++;
+    }
+    if (filled > 0 && phones / filled >= 0.6) out.add(c);
+  });
+  return out;
+}
 
 const rowKey = (sheetIndex: number, rowIndex: number) => `${sheetIndex}:${rowIndex}`;
 
@@ -230,10 +262,13 @@ export const TaskSheetWorkspace: React.FC<{
     onClose();
   }, [canEdit, save, onClose]);
 
+  const sheet = data?.sheets[activeSheet];
+  const copyableColumns = useMemo(() => (sheet ? phoneColumns(sheet.header, sheet.rows) : new Set<number>()), [sheet]);
+
   const copyValue = useCallback(
-    (value: string) => {
-      if (isProtected && !isCopyableValue(value)) {
-        flash('info', 'Only numbers can be copied - names and text are protected.');
+    (value: string, column: number) => {
+      if (isProtected && (!copyableColumns.has(column) || !isCopyableValue(value))) {
+        flash('info', 'Only phone numbers can be copied - line numbers, EIDs and other details are protected.');
         return;
       }
       writeClipboard(value).then(
@@ -241,10 +276,8 @@ export const TaskSheetWorkspace: React.FC<{
         () => flash('error', 'Could not copy'),
       );
     },
-    [isProtected, flash],
+    [isProtected, copyableColumns, flash],
   );
-
-  const sheet = data?.sheets[activeSheet];
 
   // Keyboard + clipboard rules for the protected (assignee) view.
   useEffect(() => {
@@ -272,7 +305,7 @@ export const TaskSheetWorkspace: React.FC<{
         e.preventDefault();
       } else if (key === 'c') {
         e.preventDefault();
-        if (selected && sheet) copyValue(sheet.rows[selected.r]?.[selected.c] ?? '');
+        if (selected && sheet) copyValue(sheet.rows[selected.r]?.[selected.c] ?? '', selected.c);
       }
     };
     const blockClipboard = (e: ClipboardEvent) => {
@@ -520,7 +553,7 @@ export const TaskSheetWorkspace: React.FC<{
             <Lock className="w-3.5 h-3.5 shrink-0" />
             <span>
               {canEdit
-                ? "Your manager's columns are locked. Fill in Client Response and Remarks, then Save and Send to manager. Only numbers can be copied (click the copy icon, or select a number and press Ctrl+C). This file can't be downloaded."
+                ? "Your manager's columns are locked. Fill in Client Response and Remarks, then Save and Send to manager. Only phone numbers can be copied (click the copy icon, or select a phone number and press Ctrl+C). This file can't be downloaded."
                 : 'This spreadsheet was sent to your manager and is now read-only. Ask your manager to send it back if you need to change something.'}
             </span>
           </div>
@@ -601,7 +634,11 @@ export const TaskSheetWorkspace: React.FC<{
                       className="bg-slate-100 dark:bg-slate-800 px-3 py-2 text-left text-slate-600 dark:text-slate-300 font-bold whitespace-nowrap border-b border-r border-slate-200 dark:border-slate-700 select-none"
                     >
                       <span className="inline-flex items-center gap-1">
-                        <Lock className="w-3 h-3 text-slate-400" />
+                        {isProtected && copyableColumns.has(c) ? (
+                          <Copy className="w-3 h-3 text-indigo-500" />
+                        ) : (
+                          <Lock className="w-3 h-3 text-slate-400" />
+                        )}
                         {h}
                       </span>
                     </th>
@@ -638,7 +675,7 @@ export const TaskSheetWorkspace: React.FC<{
                       </td>
                       {sheet.header.map((_, c) => {
                         const cell = row[c] ?? '';
-                        const copyable = cell !== '' && (!isProtected || isCopyableValue(cell));
+                        const copyable = cell !== '' && (!isProtected || (copyableColumns.has(c) && isCopyableValue(cell)));
                         const isSelected = selected?.r === ri && selected?.c === c;
                         return (
                           <td
@@ -656,10 +693,10 @@ export const TaskSheetWorkspace: React.FC<{
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    copyValue(cell);
+                                    copyValue(cell, c);
                                   }}
                                   className="shrink-0 p-0.5 rounded text-slate-300 hover:text-indigo-600 group-hover:text-slate-400 cursor-pointer"
-                                  title="Copy number"
+                                  title="Copy phone number"
                                 >
                                   <Copy className="w-3 h-3" />
                                 </button>

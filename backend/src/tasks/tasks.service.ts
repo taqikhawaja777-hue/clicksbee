@@ -12,6 +12,7 @@ import { NotificationRecipientType, NotificationType, Role, TaskStatus } from '@
 import { AiTaskEstimatorService } from '../services/aiTaskEstimator';
 import { NotificationsService } from '../notifications/notifications.service';
 import { getShiftDayString, getShiftDayWindow } from '../common/utils/shift-day.util';
+import { AccessUser, can } from '../common/access/access.util';
 import {
   computeTaskProductivity,
   estimateAccuracy,
@@ -40,7 +41,13 @@ export class TasksService {
     private readonly notificationsService: NotificationsService,
   ) {}
 
-  async createTask(userId: string, organizationId: string, dto: CreateTaskDto) {
+  /**
+   * requester (the signed-in user) decides who may be assigned:
+   *   Admin/Boss, HR - anyone (lead-list spreadsheets: Admin only);
+   *   Team Lead      - only their own agents (incl. lead lists);
+   *   everyone else  - not allowed.
+   */
+  async createTask(userId: string, organizationId: string, dto: CreateTaskDto, requester?: AccessUser) {
     let assignedTo = dto.assignedTo || userId;
 
     if (dto.assignedToEmail) {
@@ -51,6 +58,26 @@ export class TasksService {
         throw new NotFoundException(`No employee found with email ${dto.assignedToEmail}`);
       }
       assignedTo = assignee.id;
+    }
+
+    if (requester) {
+      const managerAccess = can(requester, 'managerPortal');
+      const teamLead = can(requester, 'leads.assignTeam');
+      if (!managerAccess && !teamLead) {
+        throw new ForbiddenException('Your role cannot assign tasks');
+      }
+      if (!managerAccess) {
+        const assignee = await this.prisma.user.findFirst({
+          where: { id: assignedTo, organizationId },
+          select: { managerId: true },
+        });
+        if (!assignee || assignee.managerId !== userId) {
+          throw new ForbiddenException('You can assign work only to agents in your own team');
+        }
+      }
+      if (dto.sheetId && !can(requester, 'leads.assignAny') && !teamLead) {
+        throw new ForbiddenException('Your role cannot assign lead lists');
+      }
     }
 
     // A fill-in spreadsheet uploaded via POST /tasks/sheets - only by this
@@ -143,7 +170,8 @@ export class TasksService {
     const where: any = { organizationId };
 
     if (role === 'EMPLOYEE') {
-      where.assignedTo = reqUserId;
+      // Their own tasks, plus (Team Lead) the ones they assigned to their agents.
+      where.OR = [{ assignedTo: reqUserId }, { assignedBy: reqUserId }];
     }
 
     if (projectId) where.projectId = projectId;
@@ -184,7 +212,7 @@ export class TasksService {
       throw new NotFoundException('Task not found');
     }
 
-    if (role === 'EMPLOYEE' && task.assignedTo !== reqUserId) {
+    if (role === 'EMPLOYEE' && task.assignedTo !== reqUserId && task.assignedBy !== reqUserId) {
       throw new ForbiddenException('Access denied to unassigned task');
     }
 

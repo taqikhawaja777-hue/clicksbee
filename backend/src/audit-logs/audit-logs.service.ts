@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { getShiftDayString, getShiftDayWindow, isPastShiftEnd } from '../common/utils/shift-day.util';
+import { AGENT_CATEGORIES, categoryOf } from '../common/access/access.util';
 
 // "Other actions" NotificationTypes with no dedicated source collection of
 // their own - CHECK_IN/TASK_ASSIGNED/TASK_COMPLETED also exist as
@@ -25,6 +26,8 @@ import { getShiftDayString, getShiftDayWindow, isPastShiftEnd } from '../common/
 const NOTIFICATION_SOURCED_ACTIONS = [
   'CHECK_OUT',
   'IDLE_ALERT',
+  'NO_CALL_ALERT',
+  'SUSPICIOUS_ACTIVITY',
   'CAMERA_ANOMALY',
   'WASHROOM_LIMIT',
   'LATE_BREAK_RETURN',
@@ -91,7 +94,12 @@ export class AuditLogsService {
     date?: string,
     userId?: string,
     action?: string,
+    // SM: only these actions, only for agents (access.util AGENT_CATEGORIES).
+    scope?: { allowedActions: string[]; agentsOnly: boolean },
   ) {
+    if (scope && action && !scope.allowedActions.includes(action)) {
+      return { data: [], pagination: { page, limit, total: 0, totalPages: 0, date: date || getShiftDayString() } };
+    }
     const dayStr = date || getShiftDayString();
     const { start, end } = getShiftDayWindow(dayStr);
 
@@ -144,7 +152,7 @@ export class AuditLogsService {
           : Promise.resolve([]),
         this.prisma.user.findMany({
           where: { organizationId, ...(userId ? { id: userId } : {}) },
-          select: { id: true, firstName: true, lastName: true },
+          select: { id: true, firstName: true, lastName: true, role: true, designation: true, officeCategory: true },
         }),
       ]);
 
@@ -208,6 +216,16 @@ export class AuditLogsService {
       if (!n.userId) return;
       rows.push({ id: n.id, userId: n.userId, userName: nameOf.get(n.userId) || 'Unknown', action: n.type, description: n.message, timestamp: n.createdAt });
     });
+
+    if (scope) {
+      const agentIds = new Set(
+        users.filter((u) => AGENT_CATEGORIES.includes(categoryOf(u))).map((u) => u.id),
+      );
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        if (!scope.allowedActions.includes(r.action) || (scope.agentsOnly && !agentIds.has(r.userId))) rows.splice(i, 1);
+      }
+    }
 
     rows.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 

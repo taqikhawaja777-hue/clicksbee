@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { LeadSheetsPanel } from './LeadSheetsPanel';
 import { ClipboardList, Inbox, CheckSquare, Calendar, Paperclip, Send, X, Reply, FileText } from 'lucide-react';
 import { apiService, TaskSheetSummary } from './src/services/api.service';
 import { useEmployee } from './EmployeeContext';
@@ -162,6 +163,8 @@ export const MyTasksView: React.FC = () => {
           Tasks your manager has assigned to you. Open any attached document here, and reply with a note or your own file.
         </p>
       </div>
+
+      <LeadSheetsPanel />
 
       {error && (
         <div className="p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 text-sm font-medium">

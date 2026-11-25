@@ -11,6 +11,8 @@ import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../prisma/prisma.service';
+import { can, categoryOf } from '../common/access/access.util';
 
 @WebSocketGateway({
   cors: {
@@ -28,6 +30,7 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
@@ -41,7 +44,7 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
    * /live namespace's gateway does - that fallback would let any socket
    * with a broken token read every organization's admin notifications.
    */
-  handleConnection(client: Socket) {
+  async handleConnection(client: Socket) {
     this.logger.log(`[MonitorGateway] Client connected: ${client.id}`);
     try {
       const authHeader = client.handshake.headers?.authorization;
@@ -52,24 +55,41 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
       }
       const secret = this.configService.get<string>('JWT_SECRET') || 'super-secret-jwt-access-key-stitchmonitor-2026';
       const payload = this.jwtService.verify(token, { secret });
-      client.data.user = payload;
+
+      // The access category (Admin/HR/SM/...) comes from the database, not
+      // the token - a category change applies on the next connection.
+      const account = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: { role: true, designation: true, officeCategory: true, isActive: true },
+      });
+      if (!account || !account.isActive) {
+        client.data.user = null;
+        return;
+      }
+      client.data.user = { ...payload, role: account.role, designation: account.designation, officeCategory: account.officeCategory, category: categoryOf(account) };
 
       // Every authenticated user gets their own personal room, for
       // employee-scoped notifications (and anything else that should
       // reach exactly one logged-in session).
       client.join(`user_${payload.sub}`);
 
-      // Admins/managers additionally join their organization's shared
-      // notification room - this is what makes "admin sees notifications
-      // about ALL employees" a single emit rather than one per manager.
-      if (payload.role === 'ADMIN' || payload.role === 'MANAGER') {
+      // Manager-portal users (Admin/Boss, HR) additionally join their
+      // organization's shared notification room - "admin sees notifications
+      // about ALL employees" is a single emit rather than one per manager.
+      if (can(client.data.user, 'managerPortal')) {
         client.join(`admin_org_${payload.organizationId}`);
       }
-      this.logger.log(`[MonitorGateway] Authenticated socket ${client.id} as user ${payload.sub} (${payload.role})`);
+      this.logger.log(`[MonitorGateway] Authenticated socket ${client.id} as user ${payload.sub} (${client.data.user.category})`);
     } catch (e) {
       client.data.user = null;
       this.logger.warn(`[MonitorGateway] Socket ${client.id} sent an invalid/expired token - connecting unauthenticated`);
     }
+  }
+
+  /** Live Monitor and the employee camera are Admin/Boss only (access.util.ts). */
+  private allowed(client: Socket, permission: 'liveMonitor.view' | 'camera.view'): boolean {
+    const user = client.data?.user;
+    return !!user && can(user, permission);
   }
 
   handleDisconnect(client: Socket) {
@@ -105,8 +125,13 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
     @MessageBody() data: { employeeId: string },
     @ConnectedSocket() client: Socket,
   ): void {
-    const { employeeId } = data;
+    const { employeeId } = data || ({} as { employeeId: string });
     if (!employeeId) return;
+    // Starting Live Monitor makes the employee's PC capture its screen - Admin/Boss only.
+    if (!this.allowed(client, 'liveMonitor.view')) {
+      client.emit('manager:unauthorized', { employeeId, error: 'Live Monitor is available to Admin only' });
+      return;
+    }
 
     // Join room for this employee
     const roomName = `employee:${employeeId}`;
@@ -135,8 +160,12 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
     @MessageBody() data: { employeeId: string },
     @ConnectedSocket() client: Socket,
   ): void {
-    const { employeeId } = data;
+    const { employeeId } = data || ({} as { employeeId: string });
     if (!employeeId) return;
+    if (!this.allowed(client, 'liveMonitor.view')) {
+      client.emit('manager:unauthorized', { employeeId, error: 'Live Monitor is available to Admin only' });
+      return;
+    }
 
     this.logger.log(`[MonitorGateway] Manager ${client.id} requested on-demand capture for employee: ${employeeId}`);
     this.server.to(`user_${employeeId}`).emit('live_monitor:trigger_now', { employeeId });
@@ -307,15 +336,15 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const { employeeId, requestId = Math.random().toString(36).substring(2, 9) } = data || {};
     if (!employeeId) return;
 
-    // Role check: Only MANAGER or ADMIN is permitted to request employee camera view
+    // Employee camera view: Admin/Boss only (not HR, SM, Team Lead...).
     const user = client.data?.user;
-    if (!user || (user.role !== 'ADMIN' && user.role !== 'MANAGER')) {
+    if (!this.allowed(client, 'camera.view')) {
       this.logger.warn(`[MonitorGateway] Unauthorized presence camera request from socket ${client.id}`);
       client.emit('presence_camera:frame', {
         employeeId,
         requestId,
         status: 'unauthorized',
-        error: 'Unauthorized: Only Managers and Admins can view employee camera feeds',
+        error: 'Unauthorized: employee camera view is available to Admin only',
       });
       return;
     }
@@ -338,7 +367,8 @@ export class MonitorGateway implements OnGatewayConnection, OnGatewayDisconnect 
     this.server.to(`user_${employeeId}`).emit('employee:request_camera_frame', {
       requestId,
       managerSocketId: client.id,
-      requesterRole: user.role,
+      // The employee app only answers ADMIN/MANAGER requesters - only Admin gets here now.
+      requesterRole: 'ADMIN',
       employeeId,
     });
   }

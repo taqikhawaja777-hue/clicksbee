@@ -17,8 +17,9 @@ export class AttendanceService {
     return getShiftDayString();
   }
 
-  async clockIn(userId: string, organizationId: string, dto: ClockInDto) {
-    if (!isWithinShift()) {
+  /** flexibleHours (Back Office, Validator): attendance at any time of day, no duty-hour window. */
+  async clockIn(userId: string, organizationId: string, dto: ClockInDto, flexibleHours = false) {
+    if (!flexibleHours && !isWithinShift()) {
       throw new ForbiddenException('Check-in is allowed only from 10:00 AM to 7:00 PM (Asia/Karachi)');
     }
     const dateStr = this.getTodayString();
@@ -58,7 +59,7 @@ export class AttendanceService {
     });
   }
 
-  async clockOut(userId: string, organizationId: string) {
+  async clockOut(userId: string, organizationId: string, flexibleHours = false) {
     const dateStr = this.getTodayString();
 
     const existing = await this.prisma.attendance.findUnique({
@@ -80,7 +81,8 @@ export class AttendanceService {
     const requestedClockOut = new Date();
     const { end } = getShiftDayWindow(dateStr);
     const shiftEnd = new Date(end.getTime() + 1);
-    const clockOut = requestedClockOut > shiftEnd ? shiftEnd : requestedClockOut;
+    // Flexible-hours roles (Back Office, Validator) have no shift end to cap at.
+    const clockOut = !flexibleHours && requestedClockOut > shiftEnd ? shiftEnd : requestedClockOut;
     const totalWorkDuration = Math.floor(
       (clockOut.getTime() - existing.clockIn.getTime()) / 1000,
     );
@@ -137,7 +139,9 @@ export class AttendanceService {
     // If clocked in & shift active (not clocked out), compute live real-time elapsed duration
     if (record.clockIn && !record.clockOut) {
       const { end } = getShiftDayWindow(record.date);
-      const cappedNow = Math.min(now.getTime(), end.getTime() + 1);
+      const clockInMs = new Date(record.clockIn).getTime();
+      // Records opened after the shift (flexible-hours roles) are not capped at its end.
+      const cappedNow = clockInMs > end.getTime() ? now.getTime() : Math.min(now.getTime(), end.getTime() + 1);
       durationSeconds = Math.max(0, Math.floor((cappedNow - new Date(record.clockIn).getTime()) / 1000));
     }
 

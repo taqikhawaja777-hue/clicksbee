@@ -5,10 +5,34 @@ import path from 'path';
 import os from 'os';
 import { registerCaptureIpcHandlers } from './captureService';
 import { registerProductivityCaptureIpcHandlers } from './productivityCapture';
-import { registerIdleTimeTrackerIpcHandlers } from './idleTimeTracker';
+import { registerIdleTimeTrackerIpcHandlers, idleTimeTracker } from './idleTimeTracker';
 import { registerLocalSettingsIpcHandlers } from './localSettings';
 import { registerLocalScreenshotServerIpcHandlers, startLocalScreenshotServer } from './localScreenshotServer';
 import { startScreenshotCleanupSweep } from './screenshotCleanup';
+import { registerAuthSessionIpcHandlers, onSessionUserChanged } from './authSession';
+import { appUsageLogger } from './appUsageLogger';
+import {
+  AUTO_TRACKED_CATEGORIES,
+  attachCloseToTray,
+  disableBackgroundMode,
+  enableBackgroundMode,
+  isBackgroundModeEnabled,
+  launchedInBackground,
+  showMainWindow,
+} from './backgroundMode';
+import { BACKEND_URL } from './serverConfig';
+
+// One copy only: the Windows start-up entry and the restart watchdog may
+// launch the app again - that second copy just hands over and exits.
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    // A manual launch shows the window; the watchdog's background launch doesn't.
+    if (!launchedInBackground(argv)) showMainWindow();
+  });
+}
 
 // Electron's default (native Wayland) Ozone backend has known GPU
 // compositing bugs on this machine's Intel/Mesa/GNOME-Wayland stack, which
@@ -28,6 +52,8 @@ function createWindow() {
     height: 800,
     minWidth: 1024,
     minHeight: 720,
+    // Started by Windows sign-in / the watchdog: run hidden in the tray.
+    show: !launchedInBackground(),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -38,6 +64,8 @@ function createWindow() {
       devTools: !app.isPackaged,
     },
   });
+
+  attachCloseToTray(mainWindow);
 
   // A target="_blank" link must never spawn a second nodeIntegration-enabled
   // window pointed at an arbitrary URL - hand http(s) links to the OS browser.
@@ -288,6 +316,29 @@ app.whenReady().then(() => {
   registerIdleTimeTrackerIpcHandlers();
   registerLocalSettingsIpcHandlers();
   registerLocalScreenshotServerIpcHandlers();
+  registerAuthSessionIpcHandlers();
+
+  // The app window can ask whether Windows/the watchdog started it (then it
+  // signs in by itself with the saved login instead of waiting for a click).
+  ipcMain.handle('get-launch-info', () => ({ background: launchedInBackground() }));
+  // Background sign-in failed (e.g. password changed): bring the window up so the user can sign in.
+  ipcMain.handle('show-main-window', () => showMainWindow());
+
+  // Auto-tracked roles: full-day app/window log + start with Windows + tray +
+  // restart watchdog. Signing out stops the log but keeps the start-up entry
+  // (tracking must not be switchable off by signing out); a role that isn't
+  // auto-tracked signing in on this PC turns background mode off.
+  onSessionUserChanged((s) => {
+    // Back Office / Validator: no duty hours - activity counts at any time of day.
+    idleTimeTracker.setFlexibleHours(!!s.category && ['BACK_OFFICE', 'VALIDATOR'].includes(s.category));
+    if (s.userId && s.category && AUTO_TRACKED_CATEGORIES.includes(s.category)) {
+      appUsageLogger.start(s.userId, BACKEND_URL);
+      void enableBackgroundMode();
+    } else {
+      appUsageLogger.stop();
+      if (s.userId) void disableBackgroundMode();
+    }
+  });
 
   // Local-network screenshot receiver + its daily cleanup sweep - runs on
   // every install regardless of role (harmless if nobody ever POSTs to it
@@ -315,9 +366,14 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  // Background mode keeps tracking running with the window closed.
+  if (process.platform !== 'darwin' && !isBackgroundModeEnabled()) {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  appUsageLogger.stop();
 });
 
 app.on('activate', () => {

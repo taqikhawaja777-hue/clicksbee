@@ -1,8 +1,18 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { NotificationRecipientType, NotificationType, Prisma } from '@prisma/client';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { getScheduledBreakSeconds, getShiftDayString, getShiftDayWindow, isScheduledBreakTime, isWithinShift } from '../common/utils/shift-day.util';
 import { computeProductivityMetrics } from '../common/utils/productivity.util';
+import {
+  ACTIVITY_STATES,
+  DEFAULT_UNPRODUCTIVE_KEYWORDS,
+  activityFields,
+  sanitizeBreakdown,
+  sanitizeKeywords,
+} from './activity-config.util';
+import { categoryOf } from '../common/access/access.util';
 
 export interface IdleSnapshotInput {
   userId: string;
@@ -12,7 +22,17 @@ export interface IdleSnapshotInput {
   appFocusSeconds?: Record<string, number>;
   lastActiveApp?: string | null;
   lastIsIdle?: boolean;
+  /** Desktop activity classifier totals (app 1.0.11+). */
+  activityBreakdown?: unknown;
+  lastState?: string | null;
+  /** ISO start of the current idle episode while lastState is IDLE/SUSPICIOUS. */
+  idleSince?: string | null;
 }
+
+export const DEFAULT_TEAM_IDLE_ALERT_MINUTES = 10;
+export const DEFAULT_SPREADSHEET_LIMIT_MINUTES = 60;
+const CONFIG_CACHE_MS = 60_000;
+export const SPREADSHEET_LIMIT_TITLE = 'Spreadsheet Time Limit';
 
 type AppFocus = Record<string, number>;
 
@@ -21,12 +41,121 @@ type AppFocus = Record<string, number>;
 // their dialer time.
 const THREE_CX_ALIASES = ['3cx', 'wildix', 'x-bees', 'wixphone'];
 
+const formatMinutes = (m: number) => (m % 60 === 0 ? `${m / 60} h` : m > 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
+
 @Injectable()
 export class TrackingService {
+  private readonly logger = new Logger(TrackingService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
+
+  // Org settings are read on every productivity page and some snapshots - keep them
+  // in memory for a minute (cleared immediately when Admin saves new settings).
+  private readonly configCache = new Map<string, { value: Record<string, unknown>; at: number }>();
+
+  private async readActivityConfig(organizationId: string): Promise<Record<string, unknown>> {
+    const cached = this.configCache.get(organizationId);
+    if (cached && Date.now() - cached.at < CONFIG_CACHE_MS) return cached.value;
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { activityConfig: true },
+    });
+    const value = ((org?.activityConfig || {}) as Record<string, unknown>) || {};
+    this.configCache.set(organizationId, { value, at: Date.now() });
+    return value;
+  }
+
+  /** Unproductive apps/sites list (built-in defaults until saved), Team Lead idle alert limit, spreadsheet limit. */
+  async getActivityConfig(organizationId: string) {
+    const saved = await this.readActivityConfig(organizationId);
+    const custom = Array.isArray(saved.unproductiveKeywords) ? (saved.unproductiveKeywords as string[]) : null;
+    const minutes = Number(saved.teamIdleAlertMinutes);
+    const sheetMinutes = Number(saved.spreadsheetLimitMinutes);
+    return {
+      unproductiveKeywords: custom ?? DEFAULT_UNPRODUCTIVE_KEYWORDS,
+      isDefault: !custom,
+      defaults: DEFAULT_UNPRODUCTIVE_KEYWORDS,
+      teamIdleAlertMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_TEAM_IDLE_ALERT_MINUTES,
+      spreadsheetLimitMinutes: Number.isFinite(sheetMinutes) && sheetMinutes > 0 ? sheetMinutes : DEFAULT_SPREADSHEET_LIMIT_MINUTES,
+    };
+  }
+
+  /** unproductiveKeywords: undefined = keep, null = reset to defaults; the minute limits: undefined = keep. */
+  async setActivityConfig(
+    organizationId: string,
+    changes: { unproductiveKeywords?: unknown; teamIdleAlertMinutes?: number; spreadsheetLimitMinutes?: number },
+  ) {
+    const saved = await this.readActivityConfig(organizationId);
+    const next: Record<string, unknown> = { ...saved };
+    if (changes.unproductiveKeywords !== undefined) {
+      // { unproductiveKeywords: null } = use the defaults (MongoDB has no Prisma DbNull).
+      next.unproductiveKeywords = changes.unproductiveKeywords === null ? null : sanitizeKeywords(changes.unproductiveKeywords);
+    }
+    if (changes.teamIdleAlertMinutes !== undefined) {
+      const minutes = Math.round(Number(changes.teamIdleAlertMinutes));
+      if (!Number.isFinite(minutes) || minutes < 2 || minutes > 240) {
+        throw new BadRequestException('Idle alert limit must be between 2 and 240 minutes');
+      }
+      next.teamIdleAlertMinutes = minutes;
+    }
+    if (changes.spreadsheetLimitMinutes !== undefined) {
+      const minutes = Math.round(Number(changes.spreadsheetLimitMinutes));
+      if (!Number.isFinite(minutes) || minutes < 10 || minutes > 540) {
+        throw new BadRequestException('Spreadsheet limit must be between 10 and 540 minutes');
+      }
+      next.spreadsheetLimitMinutes = minutes;
+    }
+    await this.prisma.organization.update({
+      where: { id: organizationId },
+      data: { activityConfig: next as Prisma.InputJsonObject },
+    });
+    this.configCache.delete(organizationId);
+    return this.getActivityConfig(organizationId);
+  }
+
+  /**
+   * Spreadsheet time stays inside active time; Admin is told once per shift
+   * when an employee passes the limit (snapshot totals only grow, so the
+   * crossing happens exactly once a day).
+   */
+  private async notifySpreadsheetLimit(
+    user: { id: string; organizationId: string; firstName: string; lastName: string },
+    date: string,
+    before: number,
+    after: number,
+  ): Promise<void> {
+    // The limit is at least 10 min - below that there is nothing to check (no extra DB read).
+    if (!this.notificationsService || after <= before || after < 600) return;
+    const { spreadsheetLimitMinutes } = await this.getActivityConfig(user.organizationId);
+    const limitSeconds = spreadsheetLimitMinutes * 60;
+    if (before >= limitSeconds || after < limitSeconds) return;
+    const name = `${user.firstName} ${user.lastName}`.trim();
+    try {
+      await this.notificationsService.createSystemNotification({
+        organizationId: user.organizationId,
+        recipientType: NotificationRecipientType.ADMIN,
+        type: NotificationType.SPREADSHEET_LIMIT,
+        title: SPREADSHEET_LIMIT_TITLE,
+        message: `${name} has used Excel / spreadsheets for more than ${formatMinutes(spreadsheetLimitMinutes)} this shift (${date})`,
+        metadata: { userId: user.id, date, spreadsheetSeconds: after, limitMinutes: spreadsheetLimitMinutes },
+      });
+    } catch (err) {
+      this.logger.warn(`Spreadsheet limit notification failed for ${user.id}: ${(err as Error).message}`);
+    }
+  }
+
+  /** Fields needed for permission checks on one person of the organization (null if not found). */
+  async getAccessTarget(organizationId: string, userId: string) {
+    if (!/^[a-f0-9]{24}$/i.test(userId || '')) return null;
+    return this.prisma.user.findFirst({
+      where: { id: userId, organizationId },
+      select: { id: true, role: true, designation: true, officeCategory: true, managerId: true },
+    });
+  }
 
   async getCameraConfig() {
     const raw = await this.redis.get('config:camera');
@@ -57,22 +186,64 @@ export class TrackingService {
     }
     const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
     if (!user) throw new NotFoundException('Employee not found');
-    const cleanSeconds = (value: number) => Math.max(0, Math.round(Number(value) || 0));
+    // A day has at most 86,400 seconds - nothing reported can exceed that.
+    const cleanSeconds = (value: number) => Math.min(86_400, Math.max(0, Math.round(Number(value) || 0)));
+    const breakdown = sanitizeBreakdown(input.activityBreakdown);
+    if (breakdown) {
+      // Call time can't exceed the active time it is part of.
+      const active = cleanSeconds(input.activeSeconds);
+      breakdown.callSeconds = Math.min(breakdown.callSeconds, active);
+      breakdown.dialingSeconds = Math.min(breakdown.dialingSeconds, active);
+      breakdown.spreadsheetSeconds = Math.min(breakdown.spreadsheetSeconds, active);
+      breakdown.longestNoCallGapSeconds = Math.min(breakdown.longestNoCallGapSeconds, 86_400);
+    }
+    const lastState = (ACTIVITY_STATES as readonly string[]).includes(String(input.lastState)) ? String(input.lastState) : null;
 
+    // A day's totals only ever grow. An app that restarts mid-day and could
+    // not read back what it already sent (e.g. no login yet) must never
+    // overwrite the day with smaller numbers - keep the larger of each value.
+    const existing = await this.prisma.idleTimeLog.findUnique({
+      where: { userId_date: { userId: user.id, date: input.date } },
+      select: { activeSeconds: true, idleSeconds: true, appFocusSeconds: true, activityBreakdown: true },
+    });
+    const activeSeconds = Math.max(existing?.activeSeconds || 0, cleanSeconds(input.activeSeconds));
+    const idleSeconds = Math.max(existing?.idleSeconds || 0, cleanSeconds(input.idleSeconds));
+    const appFocusSeconds: Record<string, number> = { ...((existing?.appFocusSeconds || {}) as Record<string, number>) };
+    for (const [app, secs] of Object.entries(input.appFocusSeconds || {})) {
+      appFocusSeconds[app] = Math.max(Number(appFocusSeconds[app]) || 0, cleanSeconds(secs));
+    }
+    const savedBreakdown = sanitizeBreakdown(existing?.activityBreakdown);
+    if (breakdown && savedBreakdown) {
+      (Object.keys(breakdown) as (keyof typeof breakdown)[]).forEach((k) => {
+        breakdown[k] = Math.max(breakdown[k], savedBreakdown[k]);
+      });
+    }
+    // Start of the current idle episode - the Team Lead "agent idle" alert reads it.
+    const parsedIdleSince = input.idleSince ? new Date(input.idleSince) : null;
+    const idleSince =
+      lastState && (lastState === 'IDLE' || lastState === 'SUSPICIOUS') && parsedIdleSince && !Number.isNaN(parsedIdleSince.getTime())
+        ? parsedIdleSince
+        : null;
+    // Older app versions send no breakdown - leave what's stored untouched.
+    const activityData = breakdown ? { activityBreakdown: breakdown as any, lastState, idleSince } : {};
+
+    const values = {
+      activeSeconds,
+      idleSeconds,
+      appFocusSeconds,
+      lastActiveApp: input.lastActiveApp || null,
+      lastIsIdle: !!input.lastIsIdle,
+      ...activityData,
+    };
     const result = await this.prisma.idleTimeLog.upsert({
       where: { userId_date: { userId: user.id, date: input.date } },
-      create: {
-        organizationId: user.organizationId, userId: user.id, date: input.date,
-        activeSeconds: cleanSeconds(input.activeSeconds), idleSeconds: cleanSeconds(input.idleSeconds),
-        appFocusSeconds: input.appFocusSeconds || {}, lastActiveApp: input.lastActiveApp || null,
-        lastIsIdle: !!input.lastIsIdle,
-      },
-      update: {
-        activeSeconds: cleanSeconds(input.activeSeconds), idleSeconds: cleanSeconds(input.idleSeconds),
-        appFocusSeconds: input.appFocusSeconds || {}, lastActiveApp: input.lastActiveApp || null,
-        lastIsIdle: !!input.lastIsIdle,
-      },
+      create: { organizationId: user.organizationId, userId: user.id, date: input.date, ...values },
+      update: values,
     });
+
+    if (breakdown) {
+      await this.notifySpreadsheetLimit(user, input.date, savedBreakdown?.spreadsheetSeconds || 0, breakdown.spreadsheetSeconds);
+    }
 
     // Invalidate cached summaries for this date
     await Promise.allSettled([
@@ -125,7 +296,7 @@ export class TrackingService {
 
     const user = await this.prisma.user.findFirst({
       where: { id: userId, organizationId },
-      select: { id: true, firstName: true, lastName: true, email: true },
+      select: { id: true, firstName: true, lastName: true, email: true, role: true, designation: true, officeCategory: true, managerId: true },
     });
     if (!user) throw new NotFoundException('Employee not found');
 
@@ -138,7 +309,7 @@ export class TrackingService {
       }),
       this.prisma.idleTimeLog.findUnique({
         where: { userId_date: { userId, date: targetDate } },
-        select: { activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, updatedAt: true },
+        select: { activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, activityBreakdown: true, lastState: true, idleSince: true, updatedAt: true },
       }),
       this.prisma.breakSession.findMany({
         where: { userId, startedAt: { gte: window.start, lte: window.end } },
@@ -186,6 +357,7 @@ export class TrackingService {
 
     const result = {
       employeeId: user.id, userId: user.id, employeeName: `${user.firstName} ${user.lastName}`.trim(), email: user.email,
+        category: categoryOf(user), teamLeadId: user.managerId || null,
       date: targetDate, checkInAt: attendanceRow?.clockIn || null, checkOutAt: attendanceRow?.clockOut || null,
       stillCheckedIn: isCheckedIn, attendanceStatus: (attendanceRow ? 'PRESENT' : 'ABSENT') as 'PRESENT' | 'ABSENT',
       isCheckedIn,
@@ -193,6 +365,7 @@ export class TrackingService {
       breakSeconds,
       shiftDurationSeconds,
       activeSeconds, idleSeconds, jabberSeconds, threeCxSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+      ...activityFields(idle, now),
       hasActivitySnapshot: !!idle,
       productivityPercentage: metrics.overallProductivityPercentage,
       status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
@@ -228,7 +401,7 @@ export class TrackingService {
     const [users, attendance, idleLogs, breaks] = await Promise.all([
       this.prisma.user.findMany({
         where: { organizationId, role: 'EMPLOYEE', isActive: true },
-        select: { id: true, firstName: true, lastName: true, email: true }, orderBy: { firstName: 'asc' },
+        select: { id: true, firstName: true, lastName: true, email: true, role: true, designation: true, officeCategory: true, managerId: true }, orderBy: { firstName: 'asc' },
       }),
       this.prisma.attendance.findMany({
         where: { organizationId, date },
@@ -236,7 +409,7 @@ export class TrackingService {
       }),
       this.prisma.idleTimeLog.findMany({
         where: { organizationId, date },
-        select: { userId: true, activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, updatedAt: true },
+        select: { userId: true, activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, activityBreakdown: true, lastState: true, idleSince: true, updatedAt: true },
       }),
       this.prisma.breakSession.findMany({
         where: { organizationId, startedAt: { gte: window.start, lte: window.end } },
@@ -291,6 +464,7 @@ export class TrackingService {
 
       return {
         employeeId: user.id, userId: user.id, employeeName: `${user.firstName} ${user.lastName}`.trim(), email: user.email,
+        category: categoryOf(user), teamLeadId: user.managerId || null,
         date, checkInAt: attendanceRow?.clockIn || null, checkOutAt: attendanceRow?.clockOut || null,
         stillCheckedIn: isCheckedIn, attendanceStatus: attendanceRow ? 'PRESENT' : 'ABSENT',
         isCheckedIn,
@@ -298,6 +472,7 @@ export class TrackingService {
         breakSeconds,
         shiftDurationSeconds,
         activeSeconds, idleSeconds, jabberSeconds, threeCxSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+        ...activityFields(idle, now),
         hasActivitySnapshot: !!idle,
         productivityPercentage: metrics.overallProductivityPercentage,
         status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,
@@ -315,7 +490,7 @@ export class TrackingService {
     const [users, attendanceList, idleList, breakList] = await Promise.all([
       this.prisma.user.findMany({
         where: { organizationId, role: 'EMPLOYEE', isActive: true },
-        select: { id: true, firstName: true, lastName: true, email: true },
+        select: { id: true, firstName: true, lastName: true, email: true, role: true, designation: true, officeCategory: true, managerId: true },
         orderBy: { firstName: 'asc' },
       }),
       this.prisma.attendance.findMany({
@@ -324,7 +499,7 @@ export class TrackingService {
       }),
       this.prisma.idleTimeLog.findMany({
         where: { organizationId, date: { in: dates } },
-        select: { userId: true, date: true, activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, updatedAt: true },
+        select: { userId: true, date: true, activeSeconds: true, idleSeconds: true, appFocusSeconds: true, lastIsIdle: true, activityBreakdown: true, lastState: true, idleSince: true, updatedAt: true },
       }),
       this.prisma.breakSession.findMany({
         where: { organizationId, startedAt: { gte: windowStart, lte: windowEnd } },
@@ -396,6 +571,7 @@ export class TrackingService {
 
         rows.push({
           employeeId: user.id, userId: user.id, employeeName: `${user.firstName} ${user.lastName}`.trim(), email: user.email,
+        category: categoryOf(user), teamLeadId: user.managerId || null,
           date, checkInAt: attendanceRow?.clockIn || null, checkOutAt: attendanceRow?.clockOut || null,
           stillCheckedIn: isCheckedIn, attendanceStatus: attendanceRow ? 'PRESENT' : 'ABSENT',
           isCheckedIn,
@@ -403,6 +579,7 @@ export class TrackingService {
           breakSeconds,
           shiftDurationSeconds,
           activeSeconds, idleSeconds, jabberSeconds, threeCxSeconds, yeastarSeconds, cameraActiveSeconds: 0,
+          ...activityFields(idle, now),
           hasActivitySnapshot: !!idle,
           productivityPercentage: metrics.overallProductivityPercentage,
           status, updatedAt: idle?.updatedAt || attendanceRow?.clockIn || null,

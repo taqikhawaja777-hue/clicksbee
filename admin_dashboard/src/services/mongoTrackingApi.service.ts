@@ -27,9 +27,11 @@ class MongoTrackingApiService {
     return unwrap<{ rows: DailyReportRow[] }>(await apiService.get(`/tracking/attendance-report?${query}`));
   }
 
-  async getProductivityReport(startDate: string, endDate: string): Promise<{ rows: DailyReportRow[] }> {
+  async getProductivityReport(startDate: string, endDate: string): Promise<{ rows: DailyReportRow[]; spreadsheetLimitMinutes?: number }> {
     const query = new URLSearchParams({ startDate, endDate });
-    return unwrap<{ rows: DailyReportRow[] }>(await apiService.get(`/tracking/productivity-report?${query}`));
+    return unwrap<{ rows: DailyReportRow[]; spreadsheetLimitMinutes?: number }>(
+      await apiService.get(`/tracking/productivity-report?${query}`),
+    );
   }
 
   async getShiftSummary(employeeId: string, date?: string): Promise<ShiftSummary> {

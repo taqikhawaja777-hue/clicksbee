@@ -11,6 +11,7 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  Req,
   HttpCode,
   HttpStatus,
   BadRequestException,
@@ -32,6 +33,8 @@ import { MAX_SHEET_FILE_BYTES } from './task-sheet.util';
 import { StorageService } from '../storage/storage.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { AccessRole } from '../common/access/access-role.decorator';
+import { can } from '../common/access/access.util';
 import { TaskStatus } from '@prisma/client';
 
 @ApiTags('Tasks')
@@ -45,14 +48,10 @@ export class TasksController {
     private readonly storageService: StorageService,
   ) {}
 
-  @ApiOperation({ summary: 'Create task' })
+  @ApiOperation({ summary: 'Create task (Admin/HR: anyone; Team Lead: own agents only; lead lists: Admin or Team Lead)' })
   @Post()
-  async createTask(
-    @CurrentUser('id') userId: string,
-    @CurrentUser('organizationId') organizationId: string,
-    @Body() dto: CreateTaskDto,
-  ) {
-    return this.tasksService.createTask(userId, organizationId, dto);
+  async createTask(@Req() req: any, @Body() dto: CreateTaskDto) {
+    return this.tasksService.createTask(req.user.id, req.user.organizationId, dto, req.user);
   }
 
   @ApiOperation({ summary: 'Upload a document to attach to a task - the brief on creation, or a reply' })
@@ -85,9 +84,11 @@ export class TasksController {
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser('id') userId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @Req() req: any,
   ) {
-    return this.taskSheetsService.upload(file, userId, organizationId, role);
+    // Lead lists: Admin/Boss (anyone) or Team Lead (own agents, checked when the task is created).
+    const mayAssignLeads = can(req.user, 'leads.assignAny') || can(req.user, 'leads.assignTeam');
+    return this.taskSheetsService.upload(file, userId, organizationId, mayAssignLeads ? 'MANAGER' : 'EMPLOYEE');
   }
 
   @ApiOperation({ summary: "A task's spreadsheet cells and saved responses (never the file itself)" })
@@ -96,7 +97,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
   ) {
     return this.taskSheetsService.getSheet(id, organizationId, reqUserId, role);
   }
@@ -107,7 +108,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Body() dto: SaveSheetResponsesDto,
   ) {
     return this.taskSheetsService.save(id, organizationId, reqUserId, role, dto.responses);
@@ -120,7 +121,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Body() dto: SubmitSheetDto,
   ) {
     return this.taskSheetsService.submit(id, organizationId, reqUserId, role, dto.responses);
@@ -133,7 +134,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Body() dto: ReopenSheetDto,
   ) {
     return this.taskSheetsService.reopen(id, organizationId, reqUserId, role, dto.note);
@@ -145,7 +146,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Query('version') version?: string,
   ) {
     return this.taskSheetsService.download(
@@ -163,7 +164,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Body() dto: TaskReplyDto,
   ) {
     return this.tasksService.addReply(id, organizationId, reqUserId, role, dto);
@@ -173,7 +174,7 @@ export class TasksController {
   @Get('productivity')
   async getTeamProductivity(
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
@@ -188,7 +189,7 @@ export class TasksController {
   async getTickets(
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Query('userId') userId?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
@@ -201,7 +202,7 @@ export class TasksController {
   async getTasks(
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Query('projectId') projectId?: string,
     @Query('status') status?: TaskStatus,
   ) {
@@ -214,7 +215,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
   ) {
     return this.tasksService.getTaskById(id, organizationId, reqUserId, role);
   }
@@ -225,7 +226,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
     @Body() dto: UpdateTaskDto,
   ) {
     return this.tasksService.updateTask(id, organizationId, reqUserId, role, dto);
@@ -237,7 +238,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
   ) {
     return this.tasksService.deleteTask(id, organizationId, reqUserId, role);
   }
@@ -249,7 +250,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
   ) {
     return this.tasksService.startTask(id, organizationId, reqUserId, role);
   }
@@ -261,7 +262,7 @@ export class TasksController {
     @Param('id') id: string,
     @CurrentUser('id') reqUserId: string,
     @CurrentUser('organizationId') organizationId: string,
-    @CurrentUser('role') role: string,
+    @AccessRole() role: string,
   ) {
     return this.tasksService.completeTask(id, organizationId, reqUserId, role);
   }

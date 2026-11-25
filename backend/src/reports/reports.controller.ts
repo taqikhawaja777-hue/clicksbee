@@ -10,7 +10,8 @@ import { Role } from '@prisma/client';
 @ApiTags('Reporting System')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.MANAGER)
+// Productivity / app / website reports of everyone - Admin/Boss only.
+@Roles(Role.ADMIN)
 @Controller('reports')
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}

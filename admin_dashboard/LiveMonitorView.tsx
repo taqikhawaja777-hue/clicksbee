@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Eye, AlertTriangle, CheckCircle2, Clock, Brain, Sparkles, Activity, Layers, ChevronDown, MonitorSmartphone, Building2, UserX } from 'lucide-react';
 import { useEmployee } from './EmployeeContext';
 import { socketService } from './src/services/socket.service';
-import { API_ORIGIN } from './src/services/api.service';
+import { API_ORIGIN, apiService } from './src/services/api.service';
 
 interface AiSummaryData {
   userId: string;
@@ -80,12 +80,12 @@ export const LiveMonitorView: React.FC = () => {
   const fetchAiSummary = async (userId: string = 'emp-101') => {
     if (!userId) return;
     try {
-      const res = await fetch(`${API_ORIGIN}/api/v1/analytics/live-summary?userId=${userId}`);
+      const res = await apiService.authFetch(`/api/v1/analytics/live-summary?userId=${userId}`);
       if (res.ok) {
         const data = await res.json();
         setAiSummary(data);
       } else {
-        const fallbackRes = await fetch(`${API_ORIGIN}/api/v1/analytics/employee-summary/${userId}`);
+        const fallbackRes = await apiService.authFetch(`/api/v1/analytics/employee-summary/${userId}`);
         if (fallbackRes.ok) {
           const data = await fallbackRes.json();
           setAiSummary(data);
@@ -179,7 +179,7 @@ export const LiveMonitorView: React.FC = () => {
   // on the summary card below)
   const fetchRegisteredEmployees = async () => {
     try {
-      const res = await fetch(`${API_ORIGIN}/api/v1/employees`);
+      const res = await apiService.authFetch(`/api/v1/employees`);
       if (res.ok) {
         const json = await res.json();
         let list: any[] = [];
