@@ -1,6 +1,6 @@
 {
   "name": "worktrackpro-agent",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "WorkTrackPro Employee Monitoring Desktop Agent",
   "author": "StitchMonitor",
   "main": "dist-electron/main.js",
@@ -56,7 +56,7 @@
     "productName": "WorkTrackPro",
     "npmRebuild": false,
     "directories": {
-      "output": "release-v1.0.10"
+      "output": "release-v1.0.11"
     },
     "files": [
       "dist/**/*",
