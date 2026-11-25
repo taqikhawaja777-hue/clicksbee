@@ -32,7 +32,9 @@ function prepareElectronDist() {
   const destDir = path.join(__dirname, '..', '.electron-dist');
   const markerFile = path.join(destDir, '.extracted-' + electronVersion);
 
-  if (fs.existsSync(markerFile)) {
+  // An extraction missing electron.exe is useless (packaging would fail on the
+  // rename) - only reuse it when the executable is really there.
+  if (fs.existsSync(markerFile) && fs.existsSync(path.join(destDir, 'electron.exe'))) {
     return destDir;
   }
 
@@ -62,6 +64,9 @@ function prepareElectronDist() {
     '-NoProfile', '-NonInteractive', '-Command',
     `Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force`,
   ]);
+  if (!fs.existsSync(path.join(destDir, 'electron.exe'))) {
+    throw new Error(`Extracted ${zipName} into ${destDir} but electron.exe is missing - delete .electron-dist and the cached zip, then retry.`);
+  }
   fs.writeFileSync(markerFile, '');
 
   return destDir;

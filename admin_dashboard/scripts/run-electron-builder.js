@@ -8,7 +8,11 @@ const path = require('path');
 
 const args = process.argv.slice(2);
 
-if (process.platform === 'win32') {
+// The pre-extracted electronDist only works around a rename problem on one
+// local machine. GitHub Actions sets CI=true and uses electron-builder's own
+// download/extract (the pre-extracted copy came out without electron.exe
+// there for v1.0.11 - "ENOENT rename ...\\electron.exe -> WorkTrackPro.exe").
+if (process.platform === 'win32' && !process.env.CI) {
   const { prepareElectronDist } = require('./prepare-electron-dist');
   const distDir = prepareElectronDist();
   args.push(`-c.electronDist=${distDir}`);
